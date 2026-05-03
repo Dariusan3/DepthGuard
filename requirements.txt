@@ -1,0 +1,14 @@
+PyQt5>=5.15
+opencv-python>=4.5
+numpy>=1.21
+pygame>=2.0
+pandas>=1.3
+pyqtgraph>=0.13
+GPUtil>=1.4
+psutil>=5.8
+
+# For real depth estimation — optional, app works without these
+torch>=2.0
+torchvision>=0.15
+timm>=0.9
+# For DepthPro: pip install -e . from https://github.com/Dariusan3/ml-depth-pro

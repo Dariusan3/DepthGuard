@@ -1,0 +1,3 @@
+model,frames,mean_fps,p95_fps,mean_latency_ms,p95_latency_ms,peak_memory_mb,delta_memory_mb,meets_15fps,meets_4gb
+mock,234,62.66,56.61,14.76,15.96,394.4,87.0,True,True
+midas,154,5.29,4.89,188.03,203.51,847.5,10.3,False,True

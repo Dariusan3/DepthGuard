@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Large datasets — never commit these
+data/raw_downloads/
+data/training/
+data/driving/
+
+# Model checkpoints
+checkpoints/
+*.pt
+*.pth
+*.onnx
+
+# Session logs (keep folder, ignore content)
+logs/*.csv
+logs/*.txt
+!logs/.gitkeep
+
+# Video bundle for the test_video at root
+test_video.mp4
+
+# Build artifacts
+build/
+dist/
+
+# Claude Code / agent metadata (skills, not project code)
+.claude/
+.agent/
+
+# Orphan
+package-lock.json
+
+# Profiler outputs (can be regenerated)
+results/perf/per_frame_*.csv
