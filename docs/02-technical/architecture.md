@@ -34,8 +34,10 @@
 
 | File | Role |
 |---|---|
-| `main.py` | Entry point — boots PyQt5 app |
-| `src/ui/main_window.py` | Three-tab main window (Simulation / Performance / Analysis) |
+| `main.py` | Entry point — login dialog → main window loop |
+| `src/auth/login_dialog.py` | Sign-in screen shown before the main window |
+| `src/auth/users.py` | Mock user store + `authenticate()` (driver / admin roles) — see [auth-and-roles.md](auth-and-roles.md) |
+| `src/ui/main_window.py` | Three-tab main window (Simulation / Performance / Analysis); driver role hides researcher-only widgets |
 | `src/models/mock_model.py` | Synthetic depth (fallback for UI testing) |
 | `src/models/midas_model.py` | MiDaS via torch.hub (fallback for Jetson) |
 | `src/models/depth_pro_model.py` | DepthPro via local fork (primary thesis model) |

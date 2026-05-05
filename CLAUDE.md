@@ -20,7 +20,7 @@ There are no tests, linting, or build steps configured.
 
 ## Architecture
 
-**Entry point:** `main.py` creates a QApplication with Fusion style and launches `MainWindow`.
+**Entry point:** `main.py` creates a QApplication with Fusion style, shows a `LoginDialog` (`src/auth/login_dialog.py`), and on success launches `MainWindow(user=...)`. The user's role (driver / admin) controls which widgets are visible — see `docs/02-technical/auth-and-roles.md`.
 
 **Core simulation pipeline** (runs per-frame in `MainWindow.process_next_frame`):
 1. **Model inference** (`src/models/mock_model.py`) — `MockModel.inference(frame)` returns a 0.0–1.0 depth map. Currently synthetic (gradient + simulated vehicle blob). The UI has model selector dropdowns for MiDaS and custom models but only MockModel is implemented.
@@ -33,6 +33,8 @@ There are no tests, linting, or build steps configured.
 - **Driving Simulation**: side-by-side driver view + JET-colorized depth map, alert status bar, video controls, BRAKE button, session management
 - **Performance Monitor**: live FPS/latency charts (pyqtgraph), system metrics, Jetson compatibility badge
 - **Session Analysis**: reaction statistics, log table, CSV export
+
+**Role-based UI:** `MainWindow.__init__(user=...)` accepts the authenticated user. After all widgets are built, `_apply_role_visibility()` hides researcher-only controls (model/mode/condition selectors, session row, Performance + Analysis tabs) when the user is a driver. To hide a new admin-only widget: store it as `self.<name>` (not a local var) and add it to the tuple in `_apply_role_visibility`. Mock users live in `src/auth/users.py` (`_USERS` dict).
 
 ## Key Design Details
 
