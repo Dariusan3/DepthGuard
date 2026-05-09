@@ -17,6 +17,7 @@ Research Internship in Self-Supervised Monocular Depth Estimation for Driver Saf
 
 ### 02 — Technical
 - [Architecture](02-technical/architecture.md) — System overview
+- [Auth & Roles](02-technical/auth-and-roles.md) — Login screen, mock users, driver vs admin UI split
 - [Real Video Pipeline](02-technical/real-video-pipeline.md) — Replacing mock with real dashcam footage
 - [UI Redesign](02-technical/ui-redesign.md) — Frontend improvements (done + planned)
 - [AR Extension](02-technical/ar-extension.md) — Augmented reality testing capability

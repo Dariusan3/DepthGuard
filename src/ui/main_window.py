@@ -269,9 +269,18 @@ QLabel#MetricLabel {{
 """
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, user=None):
         super().__init__()
-        self.setWindowTitle("DepthGuard")
+        # Authenticated user (driver or admin). When None we default to admin
+        # so the window remains usable in scripts/tests that bypass the login flow.
+        from src.auth.users import User, Role
+        if user is None:
+            user = User(username="admin", role=Role.ADMIN, display_name="Researcher")
+        self.user = user
+        # Set by _logout() so main.py knows to re-show the login screen instead of exiting.
+        self._logout_requested = False
+
+        self.setWindowTitle(f"DepthGuard — {user.display_name}")
         self.resize(1440, 900)
         self.setMinimumSize(1100, 750)
         self.setStyleSheet(STYLESHEET)
@@ -334,6 +343,7 @@ class MainWindow(QMainWindow):
 
         self.setup_ui()
         self._setup_shortcuts()
+        self._apply_role_visibility()
 
     def _setup_shortcuts(self):
         """Keyboard shortcuts for participant-friendly use."""
@@ -352,6 +362,48 @@ class MainWindow(QMainWindow):
             self.showMaximized()
         else:
             self.showFullScreen()
+
+    # ── Role-based UI gating ─────────────────────────────────────
+    def _apply_role_visibility(self):
+        """
+        Hide researcher-only controls when a DRIVER is signed in.
+
+        Drivers see: video panels, alert strip, progress bar, transport
+        buttons (Load/Play/Stop/Loop), and the BRAKE button. Everything
+        else — model/mode/condition selectors, session row, Performance
+        tab, Analysis tab — is researcher-only and hidden.
+        """
+        if self.user.is_admin:
+            return
+
+        # Admin-only widgets on the SIMULATION tab
+        for w in (
+            self.condition_frame,
+            self._sim_vsep,
+            self.lbl_model, self.cb_model,
+            self.lbl_mode, self.cb_mode,
+            self._session_row,
+        ):
+            w.setVisible(False)
+
+        # Remove researcher-only tabs (highest index first to keep indices stable)
+        # Index 2 = ANALYSIS, Index 1 = PERFORMANCE.
+        if self.tabs.count() > 2:
+            self.tabs.removeTab(2)
+        if self.tabs.count() > 1:
+            self.tabs.removeTab(1)
+
+        # No need to keep the perf monitor timer running for drivers.
+        self.monitor_timer.stop()
+
+    def _logout(self):
+        """Sign out and return to the login screen.
+
+        main.py loops on this flag so the app re-shows the login dialog
+        instead of exiting.
+        """
+        self._logout_requested = True
+        self.close()
 
     # ── Helpers ──────────────────────────────────────────────────
     @staticmethod
@@ -449,11 +501,41 @@ class MainWindow(QMainWindow):
             f" background: transparent; border: none;"
         )
 
+        # User pill — shows the signed-in user's role and display name. Clickable
+        # → log out (returns to the login screen).
+        role_tag = "ADMIN" if self.user.is_admin else "DRIVER"
+        role_color = C_ACCENT if self.user.is_admin else C_CAUTION
+        self.lbl_user_pill = QLabel(
+            f"<span style='color:{role_color}; font-weight:700; letter-spacing:1.5px;'>{role_tag}</span>"
+            f"  <span style='color:{C_TEXT};'>{self.user.display_name}</span>"
+        )
+        self.lbl_user_pill.setTextFormat(Qt.RichText)
+        self.lbl_user_pill.setStyleSheet(
+            f"background-color: {C_BG_CARD}; border: 1px solid {C_BORDER};"
+            f" border-radius: 14px; padding: 4px 12px; font-size: 11px;"
+        )
+
+        self.btn_logout = QPushButton("LOG OUT")
+        self.btn_logout.setCursor(Qt.PointingHandCursor)
+        self.btn_logout.setFocusPolicy(Qt.NoFocus)
+        self.btn_logout.clicked.connect(self._logout)
+        self.btn_logout.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {C_TEXT_DIM};"
+            f" border: 1px solid {C_BORDER}; border-radius: 14px;"
+            f" padding: 4px 12px; font-size: 10px; font-weight: 700;"
+            f" letter-spacing: 1.5px; }}"
+            f"QPushButton:hover {{ color: {C_DANGER}; border-color: {C_DANGER}; }}"
+        )
+
         h_lay.addWidget(logo)
         h_lay.addSpacing(12)
         h_lay.addWidget(tag)
         h_lay.addStretch()
         h_lay.addWidget(self.lbl_current_fps)
+        h_lay.addSpacing(16)
+        h_lay.addWidget(self.lbl_user_pill)
+        h_lay.addSpacing(6)
+        h_lay.addWidget(self.btn_logout)
 
         main_layout.addWidget(header)
 
@@ -591,8 +673,8 @@ class MainWindow(QMainWindow):
         # ── Condition selector (3-way segmented control) ──
         from src.core.experiment import ExperimentCondition
 
-        condition_frame = QFrame()
-        condition_frame.setStyleSheet(
+        self.condition_frame = QFrame()
+        self.condition_frame.setStyleSheet(
             f"background-color: {C_BG_CARD}; border: 1px solid {C_BORDER};"
             f" border-radius: 6px;"
         )
@@ -621,19 +703,19 @@ class MainWindow(QMainWindow):
         ctrl_lay.addWidget(self.btn_stop)
         ctrl_lay.addWidget(self.btn_loop)
         ctrl_lay.addSpacing(8)
-        ctrl_lay.addWidget(condition_frame)
+        ctrl_lay.addWidget(self.condition_frame)
 
         # Separator
         ctrl_lay.addSpacing(8)
-        vsep = QFrame()
-        vsep.setFrameShape(QFrame.VLine)
-        vsep.setStyleSheet(f"color: {C_BORDER}; max-width: 1px;")
-        ctrl_lay.addWidget(vsep)
+        self._sim_vsep = QFrame()
+        self._sim_vsep.setFrameShape(QFrame.VLine)
+        self._sim_vsep.setStyleSheet(f"color: {C_BORDER}; max-width: 1px;")
+        ctrl_lay.addWidget(self._sim_vsep)
         ctrl_lay.addSpacing(8)
 
         # Model / Mode selectors
-        lbl_model = QLabel("MODEL")
-        lbl_model.setStyleSheet(
+        self.lbl_model = QLabel("MODEL")
+        self.lbl_model.setStyleSheet(
             f"color: {C_TEXT_MUTED}; font-size: 10px; font-weight: 700;"
             f" letter-spacing: 1px; background: transparent; border: none;"
         )
@@ -649,8 +731,8 @@ class MainWindow(QMainWindow):
         self.cb_model.setFixedWidth(190)
         self.cb_model.currentIndexChanged.connect(self.switch_model)
 
-        lbl_mode = QLabel("MODE")
-        lbl_mode.setStyleSheet(
+        self.lbl_mode = QLabel("MODE")
+        self.lbl_mode.setStyleSheet(
             f"color: {C_TEXT_MUTED}; font-size: 10px; font-weight: 700;"
             f" letter-spacing: 1px; background: transparent; border: none;"
         )
@@ -659,10 +741,10 @@ class MainWindow(QMainWindow):
         self.cb_mode.currentIndexChanged.connect(self.update_simulation_mode)
         self.cb_mode.setFixedWidth(180)
 
-        ctrl_lay.addWidget(lbl_model)
+        ctrl_lay.addWidget(self.lbl_model)
         ctrl_lay.addWidget(self.cb_model)
         ctrl_lay.addSpacing(8)
-        ctrl_lay.addWidget(lbl_mode)
+        ctrl_lay.addWidget(self.lbl_mode)
         ctrl_lay.addWidget(self.cb_mode)
         ctrl_lay.addStretch()
 
@@ -678,11 +760,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(controls_frame)
 
         # ── Session Row ──
-        session_lay = QHBoxLayout()
+        self._session_row = QFrame()
+        self._session_row.setStyleSheet("background: transparent; border: none;")
+        session_lay = QHBoxLayout(self._session_row)
+        session_lay.setContentsMargins(0, 0, 0, 0)
         session_lay.setSpacing(8)
 
-        lbl_pid = QLabel("PARTICIPANT")
-        lbl_pid.setStyleSheet(
+        self.lbl_pid = QLabel("PARTICIPANT")
+        self.lbl_pid.setStyleSheet(
             f"color: {C_TEXT_MUTED}; font-size: 10px; font-weight: 700;"
             f" letter-spacing: 1px;"
         )
@@ -701,14 +786,14 @@ class MainWindow(QMainWindow):
         self.btn_save_session = QPushButton("  Save Session")
         self.btn_save_session.clicked.connect(self.save_session)
 
-        session_lay.addWidget(lbl_pid)
+        session_lay.addWidget(self.lbl_pid)
         session_lay.addWidget(self.inp_participant)
         session_lay.addWidget(self.btn_start_session)
         session_lay.addWidget(self.btn_load_playlist)
         session_lay.addWidget(self.btn_save_session)
         session_lay.addStretch()
 
-        layout.addLayout(session_lay)
+        layout.addWidget(self._session_row)
 
         self.tabs.addTab(sim_tab, "SIMULATION")
 
