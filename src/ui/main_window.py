@@ -678,7 +678,7 @@ class MainWindow(QMainWindow):
             f"background-color: {C_BG_CARD}; border: 1px solid {C_BORDER};"
             f" border-radius: 6px;"
         )
-        cond_lay = QHBoxLayout(condition_frame)
+        cond_lay = QHBoxLayout(self.condition_frame)
         cond_lay.setContentsMargins(8, 4, 8, 4)
         cond_lay.setSpacing(4)
 
