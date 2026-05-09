@@ -26,17 +26,27 @@ Concrete, checkable tasks per week. Mark `[x]` as completed.
 ## Week 2 — May 4 → May 10
 **Theme:** AR overlay + baseline performance.
 
-- [ ] Design AR overlay: depth contours / "danger zone" rendering on top of driver view
-- [ ] Implement AR overlay as a separate PyQt window with WindowStaysOnTopHint
-- [ ] Add toggle: "Standard view" vs "AR HUD view"
-- [ ] Profile current pipeline: capture FPS, latency, memory for 1-min clip × 3 runs
-- [ ] Document baseline numbers (Mac/CPU vs target Jetson Nano)
+- [x] Design AR overlay: depth contours / "danger zone" rendering on top of driver view
+- [x] Implement AR overlay (in-frame compositing — Option A from `ar-extension.md`)
+- [x] Add toggle (now part of the 3-way condition selector: NO ALERT / STANDARD / AR HUD)
+- [x] Profile pipeline scaffold (`scripts/profile_performance.py`) + Mock baseline captured
+- [~] MiDaS / DepthPro baseline numbers — script ready, user to run
+- [~] Document baseline numbers — table pre-filled in `jetson-optimization.md`, awaiting MiDaS row
 - [ ] Email supervisor with week 2 update
 
-**Deliverables:**
-- AR overlay working with toggle
-- `docs/02-technical/jetson-optimization.md` baseline section filled
-- 1-page performance report
+**Pulled forward from later weeks:**
+- [x] `ExperimentCondition` enum + `ConditionFlags` (W4)
+- [x] 3-way condition selector in UI with pipeline gating (W4)
+- [x] `SessionPlanner` with Latin-square block ordering (W4)
+- [x] `BlockPauseDialog` between blocks (W4)
+- [x] Solo-test mode (`Load Playlist`) and multi-participant mode (`Start Session`) (W4–5)
+- [x] `condition` column in reaction CSVs (W5–6 prep)
+
+**Deliverables shipped:**
+- AR overlay working as 3rd experimental condition
+- `scripts/profile_performance.py` + mock baseline (~63 FPS, 394 MB)
+- `docs/02-technical/jetson-optimization.md` updated with simulate-on-desktop plan + baseline tables
+- `src/core/experiment.py`, `src/core/session_planner.py`, `src/ui/block_pause_dialog.py`
 
 ---
 

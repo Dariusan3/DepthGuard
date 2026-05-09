@@ -31,20 +31,29 @@ Research Internship in Self-Supervised Monocular Depth Estimation for Driver Saf
 - [Deliverables Checklist](04-deliverables/checklist.md) — What must be turned in
 - [Thesis Outline](04-deliverables/thesis-outline.md) — Chapter structure
 
+### 05 — Weekly Progress (retrospectives)
+- [Index](05-progress/) — what was actually done each week
+- [Week 01](05-progress/week-01/) — Apr 27 to May 3 — Real videos + UI polish
+- [Week 02](05-progress/week-02/) — May 4 to May 10 — AR HUD + experimental conditions
+
 ---
 
 ## Quick status
 
 | Area | Status |
 |---|---|
-| PyQt5 application | Built — needs polish |
-| Depth model (DepthPro) | Integrated via fork |
-| Real video integration | Pending |
-| UI redesign (HUD theme) | Done — may iterate |
-| AR component | Pending — design phase |
-| Jetson deployment | Pending |
-| HCI study design | Pending |
-| HCI study execution (15+ participants) | Pending |
-| Thesis chapter | Pending |
+| PyQt5 application | ✓ shipped — HUD theme |
+| Depth models (Mock / MiDaS / DepthPro) | ✓ all three wired in |
+| Real video integration | ✓ 16 dashcam scenarios |
+| AR HUD overlay | ✓ shipped (week 2) |
+| 3 experimental conditions + Latin square | ✓ shipped (week 2, pulled from W4) |
+| Multi-participant flow + block dialogs | ✓ shipped (week 2, pulled from W4) |
+| Solo-test mode | ✓ shipped |
+| Performance baseline (Mock) | ✓ — MiDaS row pending |
+| Jetson simulation plan | ✓ documented (no hardware available) |
+| HCI study design | ✓ protocol drafted |
+| HCI study recruitment | Open — top risk |
+| HCI study execution | Pending (weeks 5–6) |
+| Thesis chapter | Pending (weeks 7–8) |
 
-Last updated: 2026-04-27
+Last updated: 2026-05-03

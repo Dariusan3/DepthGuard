@@ -442,6 +442,8 @@ class MainWindow(QMainWindow):
         )
 
         self.lbl_current_fps = QLabel("-- FPS")
+        self.lbl_current_fps.setMinimumWidth(70)
+        self.lbl_current_fps.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.lbl_current_fps.setStyleSheet(
             f"color: {C_TEXT_DIM}; font-size: 12px; font-weight: 600;"
             f" background: transparent; border: none;"
@@ -511,12 +513,12 @@ class MainWindow(QMainWindow):
 
         self.lbl_status_box = QLabel("READY")
         self.lbl_status_box.setAlignment(Qt.AlignCenter)
-        self.lbl_status_box.setMinimumHeight(52)
-        self.lbl_status_box.setMaximumHeight(64)
+        self.lbl_status_box.setMinimumHeight(56)
+        self.lbl_status_box.setMaximumHeight(72)
         font_status = QFont()
-        font_status.setPointSize(24)
+        font_status.setPointSize(20)
         font_status.setWeight(QFont.Black)
-        font_status.setLetterSpacing(QFont.AbsoluteSpacing, 2)
+        font_status.setLetterSpacing(QFont.AbsoluteSpacing, 1)
         self.lbl_status_box.setFont(font_status)
         self.lbl_status_box.setStyleSheet(
             f"background-color: {C_BORDER}; color: {C_TEXT_DIM};"
@@ -595,8 +597,8 @@ class MainWindow(QMainWindow):
             f" border-radius: 6px;"
         )
         cond_lay = QHBoxLayout(condition_frame)
-        cond_lay.setContentsMargins(4, 2, 4, 2)
-        cond_lay.setSpacing(2)
+        cond_lay.setContentsMargins(8, 4, 8, 4)
+        cond_lay.setSpacing(4)
 
         cond_lbl = QLabel("CONDITION")
         cond_lbl.setStyleSheet(
@@ -1122,6 +1124,7 @@ class MainWindow(QMainWindow):
         btn = QPushButton(label)
         btn.setCheckable(True)
         btn.setFixedHeight(32)
+        btn.setMinimumWidth(96)  # ensure "STANDARD" / "AR HUD" / "NO ALERT" fit
         btn.clicked.connect(lambda: self.set_condition(condition))
         return btn
 
@@ -1136,17 +1139,22 @@ class MainWindow(QMainWindow):
         for cond, btn in mapping.items():
             active = (cond == self.condition)
             btn.setChecked(active)
+            base = (
+                "border: none; border-radius: 4px;"
+                " padding: 0 16px;"
+                " font-size: 11px; letter-spacing: 0.8px;"
+                " min-height: 28px;"
+            )
             if active:
                 btn.setStyleSheet(
-                    f"background-color: {C_ACCENT}; color: {C_BG_DEEP};"
-                    f" border: none; padding: 4px 14px; border-radius: 4px;"
-                    f" font-weight: 700; font-size: 11px; letter-spacing: 0.8px;"
+                    f"QPushButton {{ background-color: {C_ACCENT}; color: {C_BG_DEEP};"
+                    f" font-weight: 700; {base} }}"
                 )
             else:
                 btn.setStyleSheet(
-                    f"background-color: transparent; color: {C_TEXT_DIM};"
-                    f" border: none; padding: 4px 14px; border-radius: 4px;"
-                    f" font-weight: 600; font-size: 11px; letter-spacing: 0.8px;"
+                    f"QPushButton {{ background-color: transparent; color: {C_TEXT_DIM};"
+                    f" font-weight: 600; {base} }}"
+                    f"QPushButton:hover {{ color: {C_TEXT}; }}"
                 )
 
     def set_condition(self, condition):

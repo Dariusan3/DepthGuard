@@ -151,3 +151,36 @@ Use this ordering across participants (cycle every 6):
 | P06 | AR HUD | Standard | No-alert |
 | P07 | No-alert | Standard | AR HUD |
 | ... | ... | ... | ... |
+
+---
+
+## Implementation status
+
+The protocol above is implemented in code (week 2 — pulled forward from week 4):
+
+| Protocol element | Implementation |
+|---|---|
+| 3 conditions (NO_ALERT / STANDARD / AR_HUD) | `src/core/experiment.py` — `ExperimentCondition` enum + `flags_for()` returns 4 pipeline flags (audio / alert bar / threat box / AR overlay) |
+| Latin-square block ordering | `src/core/session_planner.py` — `LATIN_SQUARE` constant, `plan_session(participant_id, scenarios)` returns a 3-block plan |
+| Balanced trial selection (2 critical + 2 warning + 1 safe per block) | `plan_session` + bucketing by `expected_alert_level` |
+| Per-participant trial randomization | `random.Random(_participant_seed(participant_id))` — reproducible per ID |
+| Pre-session + between-block + end-of-session pause dialogs | `src/ui/block_pause_dialog.py` — modal with researcher prompt to administer NASA-TLX |
+| `condition` column in reaction CSV | `src/core/data_logger.py` — `log_reaction(condition=...)` and `log_miss(condition=...)` |
+| Plan audit log | `logs/plan_<participant>_<datetime>.txt` — written by `start_session` |
+
+### How to run a participant session
+
+1. Enter participant ID (e.g. `P01`) in the controls bar
+2. Click **Start Session** (not "Load Playlist", which is solo mode)
+3. Pre-session dialog confirms readiness, shows first condition
+4. App runs Block 1 (5 trials). Participant presses SPACE on hazards.
+5. Between-block dialog appears → researcher administers NASA-TLX → click Continue
+6. Block 2 runs.
+7. Between-block dialog → NASA-TLX → Continue.
+8. Block 3 runs.
+9. End-of-session dialog → researcher administers SUS + demographics.
+10. Click **Save Session** to export CSVs + report to `logs/`.
+
+### Solo-test mode (no participant)
+
+For self-testing or quick demos without a participant ID, use **Load Playlist** instead. This walks through all 16 trials in the currently-selected condition, no Latin-square logic. Data is still logged but counts as N=1 for analysis.

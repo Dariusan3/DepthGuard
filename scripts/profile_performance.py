@@ -72,6 +72,7 @@ def profile_model(model_name, model, clip_path, max_duration_s):
     t_session_start = time.time()
     frame_idx = 0
     last_t = time.time()
+    last_progress_t = t_session_start
 
     while True:
         if time.time() - t_session_start > max_duration_s:
@@ -106,6 +107,14 @@ def profile_model(model_name, model, clip_path, max_duration_s):
             "memory_mb": round(mem_mb, 1),
             "alert_level": alert["level"],
         })
+
+        # Periodic progress so the user knows it's alive
+        if now - last_progress_t >= 3.0:
+            elapsed = now - t_session_start
+            avg_fps = frame_idx / elapsed if elapsed > 0 else 0
+            print(f"    ...{frame_idx} frames, {elapsed:.0f}s elapsed, "
+                  f"{avg_fps:.1f} FPS, {mem_mb:.0f} MB", flush=True)
+            last_progress_t = now
 
     cap.release()
     return pd.DataFrame(rows)
