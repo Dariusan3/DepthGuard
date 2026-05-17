@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DepthGuard — WebXR Companion</title>
+  <style>
+    :root {
+      --bg: #06080F;
+      --panel: #0C1021;
+      --border: #1A2038;
+      --text: #E8ECF4;
+      --dim: #6B7A99;
+      --accent: #00E5A0;
+      --danger: #FF2D55;
+      --warn: #FF9F0A;
+      --caution: #FFD60A;
+      --safe: #30D158;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "SF Pro Display", "Segoe UI", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 28px 32px;
+      max-width: 580px;
+      width: 100%;
+    }
+    h1 {
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--accent);
+      letter-spacing: 3px;
+      margin-bottom: 16px;
+    }
+    .status {
+      font-size: 12px;
+      color: var(--dim);
+      letter-spacing: 1px;
+      margin-bottom: 24px;
+    }
+    .status .dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--dim);
+      margin-right: 8px;
+    }
+    .status .dot.live { background: var(--accent); box-shadow: 0 0 12px var(--accent); }
+    .frame-preview {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 16px;
+      object-fit: cover;
+      display: block;
+    }
+    .alert-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 56px;
+      border-radius: 8px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      font-size: 18px;
+      background: var(--border);
+      color: var(--dim);
+      margin-bottom: 16px;
+      transition: background 120ms, color 120ms;
+    }
+    .alert-bar.SAFE     { background: var(--safe);    color: white; }
+    .alert-bar.CAUTION  { background: var(--caution); color: #1a1a00; }
+    .alert-bar.WARNING  { background: var(--warn);    color: white; }
+    .alert-bar.CRITICAL { background: var(--danger);  color: white; animation: pulse .5s infinite alternate; }
+    @keyframes pulse {
+      from { filter: brightness(1); }
+      to   { filter: brightness(1.25); }
+    }
+    .controls { display: flex; gap: 12px; align-items: center; }
+    button {
+      flex: 1;
+      padding: 14px 20px;
+      border-radius: 8px;
+      border: none;
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: 1px;
+      cursor: pointer;
+      transition: filter 120ms;
+    }
+    button:hover { filter: brightness(1.15); }
+    .btn-vr { background: var(--accent); color: var(--bg); }
+    .btn-brake { background: var(--danger); color: white; font-size: 18px; }
+    .meta {
+      margin-top: 16px;
+      font-size: 11px;
+      color: var(--dim);
+      letter-spacing: 0.5px;
+      line-height: 1.6;
+    }
+    .meta b { color: var(--text); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>DEPTHGUARD · WEBXR</h1>
+    <div class="status">
+      <span class="dot" id="conn-dot"></span><span id="conn-text">CONNECTING…</span>
+    </div>
+
+    <img id="frame-preview" class="frame-preview" alt="frame" />
+    <div id="alert-bar" class="alert-bar">READY</div>
+
+    <div class="controls">
+      <button id="btn-vr" class="btn-vr">ENTER VR</button>
+      <button id="btn-preview3d" class="btn-vr" style="background:#1A2038;color:#E8ECF4;">PREVIEW 3D</button>
+      <button id="btn-brake" class="btn-brake">BRAKE (B)</button>
+    </div>
+
+    <div class="meta">
+      <div>Condition: <b id="meta-condition">—</b> · Trial: <b id="meta-trial">—</b></div>
+      <div>Latency (ping/server): <b id="meta-latency">—</b></div>
+      <div>Hints: <b>VR trigger</b> or keyboard <b>B</b> / <b>SPACE</b> = brake.</div>
+    </div>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module" src="/static/main.js"></script>
+</body>
+</html>

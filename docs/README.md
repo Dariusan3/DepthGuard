@@ -21,6 +21,7 @@ Research Internship in Self-Supervised Monocular Depth Estimation for Driver Saf
 - [Real Video Pipeline](02-technical/real-video-pipeline.md) — Replacing mock with real dashcam footage
 - [UI Redesign](02-technical/ui-redesign.md) — Frontend improvements (done + planned)
 - [AR Extension](02-technical/ar-extension.md) — Augmented reality testing capability
+- [WebXR Remote](02-technical/webxr-remote.md) — Remote VR/AR testing via browser-side companion
 - [Jetson Optimization](02-technical/jetson-optimization.md) — Embedded deployment plan
 
 ### 03 — Research (HCI Study)

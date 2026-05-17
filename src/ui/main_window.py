@@ -67,13 +67,13 @@ QTabBar {{
 QTabBar::tab {{
     background: transparent;
     color: {C_TEXT_DIM};
-    padding: 12px 28px;
+    padding: 12px 32px;
+    margin-right: 4px;
     border: none;
     border-bottom: 2px solid transparent;
     font-size: 13px;
     font-weight: 600;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
+    min-width: 110px;
 }}
 QTabBar::tab:hover {{
     color: {C_TEXT};
@@ -300,6 +300,10 @@ class MainWindow(QMainWindow):
         self.condition_flags = flags_for(self.condition)
         # Backwards-compat shim — anything that still reads ar_mode_enabled
         self.ar_mode_enabled = self.condition_flags.ar_overlay_enabled
+
+        # WebXR companion (Option B) — lazy-init when user toggles it on
+        self.webxr_server = None
+        self._last_webxr_push_t = 0.0  # for throttling the frame push
 
         # State variables
         self.cap = None
@@ -674,6 +678,7 @@ class MainWindow(QMainWindow):
         from src.core.experiment import ExperimentCondition
 
         self.condition_frame = QFrame()
+        self.condition_frame.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         self.condition_frame.setStyleSheet(
             f"background-color: {C_BG_CARD}; border: 1px solid {C_BORDER};"
             f" border-radius: 6px;"
@@ -683,20 +688,34 @@ class MainWindow(QMainWindow):
         cond_lay.setSpacing(4)
 
         cond_lbl = QLabel("CONDITION")
+        cond_lbl.setMinimumWidth(90)
         cond_lbl.setStyleSheet(
-            f"color: {C_TEXT_MUTED}; font-size: 9px; font-weight: 700;"
-            f" letter-spacing: 1.5px; padding: 0 8px; background: transparent;"
-            f" border: none;"
+            f"color: {C_TEXT_MUTED}; font-size: 10px; font-weight: 700;"
+            f" padding: 0 10px; background: transparent; border: none;"
         )
         cond_lay.addWidget(cond_lbl)
 
-        self.btn_cond_no_alert = self._make_condition_button("NO ALERT", ExperimentCondition.NO_ALERT)
-        self.btn_cond_standard = self._make_condition_button("STANDARD", ExperimentCondition.STANDARD)
-        self.btn_cond_ar_hud = self._make_condition_button("AR HUD", ExperimentCondition.AR_HUD)
-        cond_lay.addWidget(self.btn_cond_no_alert)
-        cond_lay.addWidget(self.btn_cond_standard)
-        cond_lay.addWidget(self.btn_cond_ar_hud)
-        self._refresh_condition_buttons()
+        # Condition dropdown — replaces the cramped 3-button segmented control
+        self.cb_condition = QComboBox()
+        self.cb_condition.addItem("No Alert", ExperimentCondition.NO_ALERT)
+        self.cb_condition.addItem("Standard", ExperimentCondition.STANDARD)
+        self.cb_condition.addItem("AR HUD", ExperimentCondition.AR_HUD)
+        self.cb_condition.setFixedSize(150, 32)
+        f = self.cb_condition.font()
+        f.setPointSize(12)
+        f.setWeight(QFont.DemiBold)
+        self.cb_condition.setFont(f)
+        self.cb_condition.setStyleSheet(
+            f"QComboBox {{ background-color: {C_BG_PANEL}; color: {C_ACCENT};"
+            f" border: 1px solid {C_BORDER_LIT}; border-radius: 6px; padding: 4px 10px; }}"
+            f"QComboBox::drop-down {{ border: none; padding-right: 8px; }}"
+            f"QComboBox QAbstractItemView {{ background-color: {C_BG_CARD}; color: {C_TEXT};"
+            f" selection-background-color: {C_ACCENT}; selection-color: {C_BG_DEEP};"
+            f" border: 1px solid {C_BORDER}; }}"
+        )
+        self.cb_condition.currentIndexChanged.connect(self._on_condition_dropdown_changed)
+        cond_lay.addWidget(self.cb_condition)
+        self._refresh_condition_buttons()  # sync initial selection
 
         ctrl_lay.addWidget(btn_load)
         ctrl_lay.addWidget(self.btn_play)
@@ -786,11 +805,28 @@ class MainWindow(QMainWindow):
         self.btn_save_session = QPushButton("  Save Session")
         self.btn_save_session.clicked.connect(self.save_session)
 
+        self.btn_webxr = QPushButton("  📡  WebXR: OFF")
+        self.btn_webxr.setCheckable(True)
+        self.btn_webxr.clicked.connect(self.toggle_webxr_server)
+
+        # Persistent clickable URL — only visible when the WebXR server is running
+        self.lbl_webxr_url = QLabel("")
+        self.lbl_webxr_url.setTextFormat(Qt.RichText)
+        self.lbl_webxr_url.setOpenExternalLinks(True)
+        self.lbl_webxr_url.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.lbl_webxr_url.setStyleSheet(
+            f"color: {C_ACCENT}; font-size: 11px; font-weight: 700;"
+            f" padding: 0 8px; background: transparent; border: none;"
+        )
+        self.lbl_webxr_url.hide()
+
         session_lay.addWidget(self.lbl_pid)
         session_lay.addWidget(self.inp_participant)
         session_lay.addWidget(self.btn_start_session)
         session_lay.addWidget(self.btn_load_playlist)
         session_lay.addWidget(self.btn_save_session)
+        session_lay.addWidget(self.btn_webxr)
+        session_lay.addWidget(self.lbl_webxr_url)
         session_lay.addStretch()
 
         layout.addWidget(self._session_row)
@@ -1203,44 +1239,25 @@ class MainWindow(QMainWindow):
         self.is_looping = self.btn_loop.isChecked()
         self.btn_loop.setText(f"  Loop: {'ON' if self.is_looping else 'OFF'}")
 
-    def _make_condition_button(self, label, condition):
-        """One segment of the condition selector."""
-        from src.core.experiment import ExperimentCondition
-        btn = QPushButton(label)
-        btn.setCheckable(True)
-        btn.setFixedHeight(32)
-        btn.setMinimumWidth(96)  # ensure "STANDARD" / "AR HUD" / "NO ALERT" fit
-        btn.clicked.connect(lambda: self.set_condition(condition))
-        return btn
+    def _on_condition_dropdown_changed(self, index: int):
+        """Forward dropdown changes into set_condition()."""
+        condition = self.cb_condition.itemData(index)
+        if condition is not None:
+            self.set_condition(condition)
 
     def _refresh_condition_buttons(self):
-        """Update visual state of the 3-way condition selector."""
+        """Sync the dropdown selection to the current condition (call after set_condition)."""
         from src.core.experiment import ExperimentCondition
-        mapping = {
-            ExperimentCondition.NO_ALERT: self.btn_cond_no_alert,
-            ExperimentCondition.STANDARD: self.btn_cond_standard,
-            ExperimentCondition.AR_HUD: self.btn_cond_ar_hud,
+        idx_map = {
+            ExperimentCondition.NO_ALERT: 0,
+            ExperimentCondition.STANDARD: 1,
+            ExperimentCondition.AR_HUD: 2,
         }
-        for cond, btn in mapping.items():
-            active = (cond == self.condition)
-            btn.setChecked(active)
-            base = (
-                "border: none; border-radius: 4px;"
-                " padding: 0 16px;"
-                " font-size: 11px; letter-spacing: 0.8px;"
-                " min-height: 28px;"
-            )
-            if active:
-                btn.setStyleSheet(
-                    f"QPushButton {{ background-color: {C_ACCENT}; color: {C_BG_DEEP};"
-                    f" font-weight: 700; {base} }}"
-                )
-            else:
-                btn.setStyleSheet(
-                    f"QPushButton {{ background-color: transparent; color: {C_TEXT_DIM};"
-                    f" font-weight: 600; {base} }}"
-                    f"QPushButton:hover {{ color: {C_TEXT}; }}"
-                )
+        target = idx_map.get(self.condition, 1)
+        if self.cb_condition.currentIndex() != target:
+            self.cb_condition.blockSignals(True)
+            self.cb_condition.setCurrentIndex(target)
+            self.cb_condition.blockSignals(False)
 
     def set_condition(self, condition):
         """Activate one of the three experimental conditions."""
@@ -1253,6 +1270,10 @@ class MainWindow(QMainWindow):
         # Stop audio immediately if condition disables it (otherwise loop continues briefly)
         if not self.condition_flags.audio_enabled:
             self.audio_system.set_alert_level("SAFE")
+
+        # Mirror the active condition to any connected WebXR clients
+        if self.webxr_server is not None and self.webxr_server.is_running():
+            self.webxr_server.push_condition(condition.value)
 
         # Re-render the current paused frame so the change is visible
         if self.cap and not self.is_playing:
@@ -1484,6 +1505,24 @@ class MainWindow(QMainWindow):
             else:
                 self.audio_system.set_alert_level("SAFE")
             self.update_video_panels(frame, raw_depth, alert_res)
+
+            # Push to WebXR clients (throttled to ~15 FPS to keep bandwidth sane)
+            if self.webxr_server is not None and self.webxr_server.is_running():
+                now = time.time()
+                if now - self._last_webxr_push_t >= 1.0 / 15.0:
+                    self._last_webxr_push_t = now
+                    trial_meta = None
+                    if self.current_trial is not None:
+                        trial_meta = {
+                            "trial_id": self.current_trial.get("id"),
+                            "trial_num": getattr(self.playlist, "trial_num", 0),
+                            "total": getattr(self.playlist, "total", 0),
+                            "event_type": self.current_trial.get("event_type"),
+                            "label": f"Trial {getattr(self.playlist, 'trial_num', 0)}/"
+                                     f"{getattr(self.playlist, 'total', 0)}",
+                        }
+                    self.webxr_server.push_frame(frame, raw_depth, alert_res, trial_meta)
+
             self._apply_status_style(
                 alert_res["level"], alert_res["min_depth"], alert_res["avg_depth"]
             )
@@ -1984,9 +2023,48 @@ class MainWindow(QMainWindow):
         self._advance_to_next_trial()
 
     def save_session(self):
+        """Save the session — let the user pick where (Desktop, Downloads, anywhere)."""
         part_id = self.inp_participant.text() or "UNKNOWN"
+
+        # Default to the user's Desktop / Downloads, fall back to project logs/
+        home = os.path.expanduser("~")
+        default_dir = next(
+            (d for d in [
+                os.path.join(home, "Desktop"),
+                os.path.join(home, "Downloads"),
+                home,
+            ] if os.path.isdir(d)),
+            self.data_logger.log_dir,
+        )
+        suggested = os.path.join(default_dir, f"depthguard_{self.data_logger.session_id}")
+
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Choose where to save the session", suggested,
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
+        )
+        if not chosen:
+            return  # user cancelled
+
+        # Create a subfolder named with the participant + session id
+        out_dir = os.path.join(chosen, f"depthguard_{self.data_logger.session_id}")
+        os.makedirs(out_dir, exist_ok=True)
+
+        # Redirect the logger's output paths into that folder
+        self.data_logger.log_dir = out_dir
+        self.data_logger.log_file = os.path.join(out_dir, f"session_{self.data_logger.session_id}.csv")
+        self.data_logger.reaction_file = os.path.join(out_dir, f"reactions_{self.data_logger.session_id}.csv")
+        self.data_logger.report_file = os.path.join(out_dir, f"report_{self.data_logger.session_id}.txt")
+
         self.data_logger.save_session(part_id)
-        QMessageBox.information(self, "Exported", f"Data exported to {self.data_logger.log_dir}")
+
+        QMessageBox.information(
+            self, "Exported",
+            f"Session saved to:\n\n{out_dir}\n\n"
+            f"Files:\n"
+            f"  • session_{self.data_logger.session_id}.csv (per-frame log)\n"
+            f"  • reactions_{self.data_logger.session_id}.csv (brake presses)\n"
+            f"  • report_{self.data_logger.session_id}.txt (summary)"
+        )
         self.update_analysis_tab()
 
     def clear_session(self):
@@ -1996,5 +2074,91 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._flash_timer.stop()
+        if self.webxr_server is not None:
+            try:
+                self.webxr_server.stop()
+            except Exception:
+                pass
         self.audio_system.cleanup()
         event.accept()
+
+    # ── WebXR companion ──────────────────────────────────────────
+    def toggle_webxr_server(self):
+        """Start or stop the WebXR companion server."""
+        if self.webxr_server is None or not self.webxr_server.is_running():
+            try:
+                from src.network.webxr_server import WebXRServer
+            except ImportError as e:
+                QMessageBox.critical(
+                    self, "WebXR — Missing Dependencies",
+                    "The WebXR server needs aiohttp + websockets.\n\n"
+                    "Install with:\n  pip install aiohttp websockets"
+                )
+                self.btn_webxr.setChecked(False)
+                return
+
+            self.webxr_server = WebXRServer(
+                on_brake=self._handle_remote_brake,
+            )
+            try:
+                self.webxr_server.start()
+            except Exception as e:
+                QMessageBox.critical(self, "WebXR — Server Error", str(e))
+                self.btn_webxr.setChecked(False)
+                self.webxr_server = None
+                return
+
+            url = self.webxr_server.public_url_hint()
+            port = self.webxr_server.port
+            self.btn_webxr.setText("  📡  WebXR: ON")
+
+            # Persistent clickable URL in the session row
+            self.lbl_webxr_url.setText(
+                f"🔗 <a href='{url}' style='color:{C_ACCENT}; text-decoration:underline;'>{url}</a>"
+            )
+            self.lbl_webxr_url.setToolTip("Click to open the WebXR preview in your browser")
+            self.lbl_webxr_url.show()
+
+            import webbrowser
+            msg = QMessageBox(self)
+            msg.setWindowTitle("WebXR Server Started")
+            msg.setIcon(QMessageBox.Information)
+            msg.setTextFormat(Qt.RichText)
+            msg.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            msg.setText(
+                f"<b>WebXR companion is live.</b><br><br>"
+                f"Open on the headset's browser (same network):<br>"
+                f"<a href='{url}' style='color:#00E5A0; font-weight:700;'>{url}</a><br><br>"
+                f"For remote access, run:<br>"
+                f"<code>ngrok http {port}</code> &nbsp;and share the <b>https://</b> URL.<br><br>"
+                f"<i>The link will stay visible next to the WebXR button so you can reopen it any time.</i>"
+            )
+            btn_open = msg.addButton("  Open in Browser  ", QMessageBox.ActionRole)
+            msg.addButton("Close", QMessageBox.RejectRole)
+            msg.setDefaultButton(btn_open)
+            msg.exec_()
+            if msg.clickedButton() is btn_open:
+                webbrowser.open(url)
+        else:
+            try:
+                self.webxr_server.stop()
+            except Exception:
+                pass
+            self.btn_webxr.setText("  📡  WebXR: OFF")
+            self.btn_webxr.setChecked(False)
+            self.lbl_webxr_url.hide()
+            self.lbl_webxr_url.setText("")
+
+    def _handle_remote_brake(self, msg: dict):
+        """Marshal a WebXR brake event onto the Qt main thread."""
+        QTimer.singleShot(0, lambda: self._apply_remote_brake(msg))
+
+    def _apply_remote_brake(self, msg: dict):
+        """Treat a WebXR brake press identically to a local SPACE press."""
+        # Stash source + network-latency hint for the next CSV row to pick up
+        self._last_remote_brake = {
+            "source": msg.get("source", "remote"),
+            "latency_hint_ms": msg.get("latency_hint_ms", 0),
+        }
+        # Reuse the existing brake logic — it handles trial scoring + logging
+        self.record_reaction()
