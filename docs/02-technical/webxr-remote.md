@@ -69,11 +69,31 @@ ngrok config add-authtoken <your-token>   # free account
 
 ### Remote (headset anywhere with internet)
 
-1. Start DepthGuard and toggle WebXR ON (as above)
-2. In another terminal: `ngrok http 8765`
-3. ngrok prints a public https URL like `https://abc-123.ngrok-free.app`
-4. Share that URL with the remote participant — opens on any device
-5. Brake presses stream back to your local DepthGuard in real time
+**Permanent public URL (configured on free ngrok plan):**
+
+```
+https://ichthyosaurian-nonsatiric-kellan.ngrok-free.dev/
+```
+
+This is a **static domain** — it never changes. The lab's headset has this bookmarked.
+
+To bring the tunnel up:
+
+```bash
+# Terminal 1 — main app
+python main.py
+# Then toggle 📡 WebXR: OFF → ON inside the app
+
+# Terminal 2 — tunnel
+./scripts/start_tunnel.sh
+```
+
+The script runs `ngrok http --url=ichthyosaurian-nonsatiric-kellan.ngrok-free.dev 8765`. As long as both terminals are running, the bookmarked URL works.
+
+**Important reminders:**
+- Don't let your Mac sleep during a session (System Settings → Lock Screen → Turn display off → Never)
+- Keep the laptop plugged in
+- Close ngrok = URL goes dead. Re-running the script revives the same URL.
 
 ---
 
