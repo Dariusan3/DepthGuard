@@ -1223,6 +1223,9 @@ class MainWindow(QMainWindow):
             delay = int(1000 / self.target_fps)
             self.playback_timer.start(delay)
             self.btn_play.setText("  Pause")
+        # Mirror playback state to any connected WebXR / VR clients
+        if self.webxr_server is not None and self.webxr_server.is_running():
+            self.webxr_server.push_event("playback", {"playing": self.is_playing})
 
     def stop_video(self):
         self.is_playing = False
@@ -1234,6 +1237,8 @@ class MainWindow(QMainWindow):
         self.audio_system.set_alert_level("SAFE")
         self._apply_status_style("SAFE", "--", "--")
         self._smoothed_threat_box = None
+        if self.webxr_server is not None and self.webxr_server.is_running():
+            self.webxr_server.push_event("playback", {"playing": False})
 
     def toggle_loop(self):
         self.is_looping = self.btn_loop.isChecked()

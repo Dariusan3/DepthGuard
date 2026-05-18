@@ -158,6 +158,9 @@ class WebXRServer:
             web.get("/favicon.ico", self._handle_favicon),
             web.static("/static", str(WEB_ROOT), follow_symlinks=False),
         ])
+        # Disable caching on every response so the browser always picks up
+        # the latest HTML/JS without needing a hard refresh.
+        self._app.middlewares.append(self._no_cache_middleware)
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, host="0.0.0.0", port=self.port)
@@ -191,6 +194,15 @@ class WebXRServer:
     async def _handle_favicon(self, request):
         # 204 No Content — stops the browser's automatic favicon 404 in console
         return web.Response(status=204)
+
+    @web.middleware
+    async def _no_cache_middleware(self, request, handler):
+        resp = await handler(request)
+        # Tell the browser never to cache — every reload picks up fresh JS/HTML
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+        return resp
 
     async def _handle_ws(self, request):
         ws = web.WebSocketResponse(max_msg_size=8 * 1024 * 1024)
