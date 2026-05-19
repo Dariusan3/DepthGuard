@@ -101,8 +101,8 @@ const pauseLabel = new THREE.Mesh(
   new THREE.PlaneGeometry(0.9, 0.225),
   new THREE.MeshBasicMaterial({ map: pauseTex, transparent: true, opacity: 0 })
 );
-pauseLabel.position.set(0, 0.8, 0.05);  // local to windshieldGroup, just above the windshield
-windshieldGroup.add(pauseLabel);
+pauseLabel.position.set(0, 0.8, 0.05);
+// pauseLabel is attached to windshieldGroup after that group is created (further down)
 
 function setPaused(paused) {
   pauseBanner.style.display = paused ? 'block' : 'none';
@@ -258,6 +258,9 @@ const glowMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true
 const glow = new THREE.Mesh(glowGeom, glowMat);
 glow.position.set(0, 0, -0.1);
 windshieldGroup.add(glow);
+
+// Now that the group exists, attach the pause label that was created earlier
+windshieldGroup.add(pauseLabel);
 
 // Track alert updates (texture comes from the <img> element directly)
 let pendingAlert = null;
