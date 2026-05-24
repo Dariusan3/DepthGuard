@@ -108,7 +108,8 @@ class WebXRServer:
 
     # ── Public push API (called from PyQt main thread) ───────────
     def push_frame(self, frame_bgr: np.ndarray, depth_map: np.ndarray | None,
-                   alert: dict, trial_meta: dict | None = None):
+                   alert: dict, trial_meta: dict | None = None,
+                   objects: list | None = None):
         """
         Encode and broadcast a frame to all connected WebXR clients.
 
@@ -117,10 +118,11 @@ class WebXRServer:
             depth_map: float32 (H, W) in [0,1], or None to skip
             alert: {"level": ..., "min_depth": ..., "avg_depth": ...}
             trial_meta: optional {"trial_id", "trial_num", "total", "event_type"}
+            objects: optional YOLO detections from src.core.object_detector
         """
         if not self._running or self._loop is None:
             return
-        payload = self._encode_payload(frame_bgr, depth_map, alert, trial_meta)
+        payload = self._encode_payload(frame_bgr, depth_map, alert, trial_meta, objects)
         self._latest_payload = payload
         asyncio.run_coroutine_threadsafe(self._broadcast(payload), self._loop)
 
@@ -272,15 +274,20 @@ class WebXRServer:
         for d in dead:
             self._clients.discard(d)
 
-    def _encode_payload(self, frame_bgr, depth_map, alert, trial_meta):
+    def _encode_payload(self, frame_bgr, depth_map, alert, trial_meta, objects=None):
         h, w = frame_bgr.shape[:2]
+        scale_x = 1.0
+        scale_y = 1.0
         # Downscale large frames to keep bandwidth manageable
         if w > self.frame_max_width:
             scale = self.frame_max_width / w
             new_size = (self.frame_max_width, int(h * scale))
             frame_bgr = cv2.resize(frame_bgr, new_size, interpolation=cv2.INTER_AREA)
+            scale_x = new_size[0] / w
+            scale_y = new_size[1] / h
             if depth_map is not None:
                 depth_map = cv2.resize(depth_map, new_size, interpolation=cv2.INTER_LINEAR)
+        out_h, out_w = frame_bgr.shape[:2]
 
         # JPEG encode the frame
         ok, jpeg = cv2.imencode(".jpg", frame_bgr,
@@ -304,10 +311,35 @@ class WebXRServer:
                 "min_depth": float(alert.get("min_depth", 0.0)),
                 "avg_depth": float(alert.get("avg_depth", 0.0)),
             },
+            "detector_status": alert.get("detector_status", ""),
+            "frame_width": out_w,
+            "frame_height": out_h,
             "frame_jpeg_b64": frame_b64,
             "depth_png_b64": depth_b64,
+            "objects": self._encode_objects(objects or alert.get("objects", []), scale_x, scale_y),
             "trial": trial_meta or {},
         }
+
+    @staticmethod
+    def _encode_objects(objects, scale_x: float, scale_y: float) -> list[dict]:
+        encoded = []
+        for obj in objects or []:
+            payload = obj.to_payload() if hasattr(obj, "to_payload") else dict(obj)
+            bbox = payload.get("bbox")
+            center = payload.get("center")
+            if bbox:
+                x1, y1, x2, y2 = bbox
+                payload["bbox"] = [
+                    int(round(x1 * scale_x)),
+                    int(round(y1 * scale_y)),
+                    int(round(x2 * scale_x)),
+                    int(round(y2 * scale_y)),
+                ]
+            if center:
+                cx, cy = center
+                payload["center"] = [int(round(cx * scale_x)), int(round(cy * scale_y))]
+            encoded.append(payload)
+        return encoded
 
     @staticmethod
     def _local_ip() -> str:

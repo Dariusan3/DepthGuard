@@ -20,6 +20,7 @@ from src.core.performance_monitor import PerformanceMonitor
 from src.core.data_logger import DataLogger
 from src.core.audio_alerts import AudioAlertSystem
 from src.core.playlist import PlaylistManager
+from src.core.object_detector import YOLOObjectDetector
 
 # Lazy import for MiDaS (requires torch — may not be installed)
 MiDaSModel = None
@@ -289,6 +290,7 @@ class MainWindow(QMainWindow):
         # Core components
         self.model = MockModel()
         self.alert_system = SafetyAlertSystem()
+        self.object_detector = YOLOObjectDetector()
         self.perf_monitor = PerformanceMonitor()
         self.data_logger = DataLogger()
         self.audio_system = AudioAlertSystem()
@@ -314,6 +316,9 @@ class MainWindow(QMainWindow):
         self.fps = 30
         self.target_fps = 30
         self._alert_flash_on = False
+        self._last_object_detections = []
+        self._object_detection_stride = 3
+        self._last_detector_status = "YOLO: waiting"
 
         # Playlist state (HCI study mode)
         self.playlist: PlaylistManager | None = None
@@ -565,7 +570,7 @@ class MainWindow(QMainWindow):
 
         self.lbl_driver_view = QLabel("LOAD VIDEO TO BEGIN")
         self.lbl_driver_view.setAlignment(Qt.AlignCenter)
-        self.lbl_driver_view.setMinimumSize(420, 240)
+        self.lbl_driver_view.setMinimumSize(860, 480)
         self.lbl_driver_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.lbl_driver_view.setStyleSheet(
             f"background-color: {C_BG_PANEL}; border: 1px solid {C_BORDER};"
@@ -582,9 +587,9 @@ class MainWindow(QMainWindow):
             f" border-radius: 10px; color: {C_TEXT_MUTED};"
             f" font-size: 13px; font-weight: 600; letter-spacing: 1px;"
         )
+        self.lbl_depth_view.hide()
 
         video_layout.addWidget(self.lbl_driver_view)
-        video_layout.addWidget(self.lbl_depth_view)
         layout.addLayout(video_layout, stretch=1)
 
         # ── Alert Status Strip ──
@@ -1137,6 +1142,7 @@ class MainWindow(QMainWindow):
 
         self._between_trials = False
         self._smoothed_threat_box = None  # fresh tracker for new clip
+        self._last_object_detections = []
         scenario = self.playlist.next()
 
         if scenario is None:
@@ -1237,6 +1243,7 @@ class MainWindow(QMainWindow):
         self.audio_system.set_alert_level("SAFE")
         self._apply_status_style("SAFE", "--", "--")
         self._smoothed_threat_box = None
+        self._last_object_detections = []
         if self.webxr_server is not None and self.webxr_server.is_running():
             self.webxr_server.push_event("playback", {"playing": False})
 
@@ -1465,6 +1472,7 @@ class MainWindow(QMainWindow):
         # Re-seek (cap.read() in process_next_frame consumes one frame)
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
         self._smoothed_threat_box = None  # reset tracker — discontinuity
+        self._last_object_detections = []
         self.process_next_frame(update_progress_only=True)
         # Re-seek again so the next read picks up from the right place
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
@@ -1495,6 +1503,9 @@ class MainWindow(QMainWindow):
             t0 = time.time()
             raw_depth = self.model.inference(frame)
             alert_res = self.alert_system.process_depth(raw_depth)
+            detections = self._detect_objects_for_frame(frame, raw_depth)
+            alert_res["objects"] = self._detection_payloads(detections)
+            alert_res["detector_status"] = self._last_detector_status
             latency_ms = (time.time() - t0) * 1000
 
             self.perf_monitor.record_frame(latency_ms)
@@ -1509,7 +1520,7 @@ class MainWindow(QMainWindow):
                 self.audio_system.set_alert_level(alert_res["level"])
             else:
                 self.audio_system.set_alert_level("SAFE")
-            self.update_video_panels(frame, raw_depth, alert_res)
+            self.update_video_panels(frame, raw_depth, alert_res, detections)
 
             # Push to WebXR clients (throttled to ~15 FPS to keep bandwidth sane)
             if self.webxr_server is not None and self.webxr_server.is_running():
@@ -1526,14 +1537,69 @@ class MainWindow(QMainWindow):
                             "label": f"Trial {getattr(self.playlist, 'trial_num', 0)}/"
                                      f"{getattr(self.playlist, 'total', 0)}",
                         }
-                    self.webxr_server.push_frame(frame, raw_depth, alert_res, trial_meta)
+                    self.webxr_server.push_frame(
+                        frame, raw_depth, alert_res, trial_meta, detections
+                    )
 
             self._apply_status_style(
                 alert_res["level"], alert_res["min_depth"], alert_res["avg_depth"]
             )
         else:
             depth = self.model.inference(frame)
-            self.update_video_panels(frame, depth, self.alert_system.process_depth(depth))
+            alert_res = self.alert_system.process_depth(depth)
+            detections = self._detect_objects_for_frame(frame, depth)
+            alert_res["objects"] = self._detection_payloads(detections)
+            alert_res["detector_status"] = self._last_detector_status
+            self.update_video_panels(frame, depth, alert_res, detections)
+
+    def _detect_objects_for_frame(self, frame, depth_map):
+        """
+        Run YOLO every few frames and reuse the last result between runs.
+
+        This keeps the overlay realistic without making the UI wait for object
+        detection on every rendered frame. If YOLO is unavailable, this returns
+        an empty list and the old depth-contour tracker still provides a box.
+        """
+        if self.current_frame % self._object_detection_stride != 0:
+            return self._last_object_detections
+
+        detections = self.object_detector.detect(frame, depth_map)
+        self._last_object_detections = detections
+        if self.object_detector.error:
+            self._last_detector_status = f"YOLO unavailable: {self.object_detector.error}"
+        elif not self.object_detector.enabled:
+            self._last_detector_status = "YOLO disabled"
+        else:
+            self._last_detector_status = (
+                f"YOLO {self.object_detector.model_name}: {len(detections)} objects"
+            )
+        return detections
+
+    @staticmethod
+    def _detection_payloads(detections):
+        return [d.to_payload() if hasattr(d, "to_payload") else d for d in detections]
+
+    def _primary_detection_box(self, detections, alert_res):
+        if not detections:
+            return None
+
+        level = alert_res.get("level", "SAFE")
+        if level == "SAFE":
+            return None
+
+        rx1, ry1, rx2, ry2 = alert_res["roi_coords"]
+        best = None
+        best_score = -1.0
+        for det in detections:
+            x1, y1, x2, y2 = det.bbox
+            cx, cy = det.center
+            in_roi = rx1 <= cx <= rx2 and ry1 <= cy <= ry2
+            depth = 0.5 if det.depth is None else det.depth
+            score = det.importance + (0.35 if in_roi else 0.0) + (0.20 * (1.0 - depth))
+            if score > best_score:
+                best = (x1, y1, x2, y2)
+                best_score = score
+        return best
 
     def _find_threat_box(self, depth_map, alert_res):
         """
@@ -1683,82 +1749,107 @@ class MainWindow(QMainWindow):
             )
         return self._smoothed_threat_box
 
-    def update_video_panels(self, frame, depth_map, alert_res):
-        x1, y1, x2, y2 = alert_res["roi_coords"]
-        level = alert_res["level"]
+    def _draw_object_boxes(self, image, detections, primary_box=None, subtle=False):
+        if not detections:
+            return image
 
-        style = self.ALERT_STYLES.get(level, self.ALERT_STYLES["SAFE"])
-        bg_hex = style["bg"]
-        bgr_color = tuple(int(bg_hex.lstrip('#')[i:i+2], 16) for i in (4, 2, 0))
+        for det in detections:
+            x1, y1, x2, y2 = det.bbox
+            color = self._object_box_color(det.label)
+            is_primary = primary_box is not None and self._box_iou((x1, y1, x2, y2), primary_box) > 0.50
+            thickness = 3 if is_primary else (1 if subtle else 2)
+            cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
 
-        # Tracked threat bounding box (used by both standard and AR rendering)
-        threat_box = self._smooth_box(self._find_threat_box(depth_map, alert_res))
+            label = det.label.upper()
+            if det.confidence is not None:
+                label = f"{label} {det.confidence:.2f}"
+            if det.depth is not None:
+                label = f"{label} d={det.depth:.2f}"
+
+            font_scale = 0.45 if subtle else 0.52
+            (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+            label_y1 = max(0, y1 - lh - 8)
+            label_y2 = label_y1 + lh + 6
+            overlay = image.copy()
+            cv2.rectangle(overlay, (x1, label_y1), (min(image.shape[1] - 1, x1 + lw + 10), label_y2), color, -1)
+            alpha = 0.70 if subtle else 0.90
+            cv2.addWeighted(overlay, alpha, image, 1.0 - alpha, 0, image)
+            cv2.putText(
+                image,
+                label,
+                (x1 + 5, label_y2 - 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+        return image
+
+    def _draw_detector_status(self, image, detections):
+        if detections:
+            return image
+        status = getattr(self, "_last_detector_status", "")
+        if not status or status == "YOLO: waiting":
+            return image
+
+        text = status
+        if len(text) > 86:
+            text = text[:83] + "..."
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.46
+        (tw, th), _ = cv2.getTextSize(text, font, scale, 1)
+        x, y = 14, 28
+        overlay = image.copy()
+        cv2.rectangle(overlay, (x - 7, y - th - 8), (x + tw + 8, y + 8), (12, 16, 33), -1)
+        cv2.addWeighted(overlay, 0.75, image, 0.25, 0, image)
+        cv2.putText(image, text, (x, y), font, scale, (10, 214, 255), 1, cv2.LINE_AA)
+        return image
+
+    @staticmethod
+    def _object_box_color(label):
+        colors = {
+            "person": (85, 45, 255),
+            "bicycle": (10, 159, 255),
+            "motorcycle": (10, 159, 255),
+            "car": (0, 229, 160),
+            "bus": (48, 209, 88),
+            "truck": (48, 209, 88),
+            "traffic light": (10, 214, 255),
+            "stop sign": (85, 45, 255),
+        }
+        return colors.get(label, (232, 236, 244))
+
+    def update_video_panels(self, frame, depth_map, alert_res, detections=None):
+        detections = detections or []
+
+        # Real detector box used by both standard and AR rendering.
+        detector_box = self._primary_detection_box(detections, alert_res)
+        threat_box = self._smooth_box(detector_box)
 
         # ── AR HUD condition: hand off to the AR overlay renderer ──
         if self.condition_flags.ar_overlay_enabled:
             disp_frame = self.ar_overlay.render(frame, depth_map, alert_res, threat_box)
-            depth_u8 = (depth_map * 255).astype(np.uint8)
-            depth_color = cv2.applyColorMap(depth_u8, cv2.COLORMAP_JET)
-            if threat_box is not None:
-                tx1, ty1, tx2, ty2 = threat_box
-                cv2.rectangle(depth_color, (tx1, ty1), (tx2, ty2), bgr_color, 3)
+            self._draw_object_boxes(disp_frame, detections, primary_box=threat_box, subtle=True)
+            self._draw_detector_status(disp_frame, detections)
             w1, h1 = self.lbl_driver_view.width(), self.lbl_driver_view.height()
             self.lbl_driver_view.setPixmap(self._cv2_to_qpixmap(disp_frame, w1, h1))
-            w2, h2 = self.lbl_depth_view.width(), self.lbl_depth_view.height()
-            self.lbl_depth_view.setPixmap(self._cv2_to_qpixmap(depth_color, w2, h2))
             return
 
         # ── Standard / NO_ALERT mode below ──
         disp_frame = frame.copy()
 
-        # Static ROI as a thin gray reference frame (always shown — purely informational)
-        gray = (90, 100, 120)
-        cv2.rectangle(disp_frame, (x1, y1), (x2, y2), gray, 1)
-
-        # Threat box only shown when the condition allows it (gated for NO_ALERT)
-        show_threat = self.condition_flags.threat_box_visible and threat_box is not None
-        if show_threat:
-            tx1, ty1, tx2, ty2 = threat_box
-            # Thick colored rectangle around the threat
-            cv2.rectangle(disp_frame, (tx1, ty1), (tx2, ty2), bgr_color, 3)
-
-            # Corner brackets for a HUD-style targeting feel
-            corner_len = max(10, (tx2 - tx1) // 8)
-            for (cx, cy, dx_sign, dy_sign) in [
-                (tx1, ty1, 1, 1),    # top-left
-                (tx2, ty1, -1, 1),   # top-right
-                (tx1, ty2, 1, -1),   # bottom-left
-                (tx2, ty2, -1, -1),  # bottom-right
-            ]:
-                cv2.line(disp_frame, (cx, cy), (cx + dx_sign * corner_len, cy), bgr_color, 5)
-                cv2.line(disp_frame, (cx, cy), (cx, cy + dy_sign * corner_len), bgr_color, 5)
-
-            # Distance label (uses normalized depth as proxy — refine when metric depth is available)
-            min_d = float(alert_res["min_depth"])
-            label = f"{level}  ·  {min_d:.2f}"
-            (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-            label_bg_y2 = ty1 - 6
-            label_bg_y1 = label_bg_y2 - lh - 8
-            if label_bg_y1 < 0:  # box too high — put label inside
-                label_bg_y1 = ty1 + 2
-                label_bg_y2 = label_bg_y1 + lh + 8
-            cv2.rectangle(disp_frame, (tx1, label_bg_y1), (tx1 + lw + 12, label_bg_y2), bgr_color, -1)
-            cv2.putText(disp_frame, label, (tx1 + 6, label_bg_y2 - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-        # ── 3. Depth panel: always shows the threat (researcher reference) ──
-        depth_u8 = (depth_map * 255).astype(np.uint8)
-        depth_color = cv2.applyColorMap(depth_u8, cv2.COLORMAP_JET)
-        cv2.rectangle(depth_color, (x1, y1), (x2, y2), gray, 1)
-        if threat_box is not None:
-            tbx1, tby1, tbx2, tby2 = threat_box
-            cv2.rectangle(depth_color, (tbx1, tby1), (tbx2, tby2), bgr_color, 3)
+        show_detector_boxes = bool(detections) and (
+            self.condition_flags.threat_box_visible
+            or not (self.session_mode and self.condition.name == "NO_ALERT")
+        )
+        if show_detector_boxes:
+            self._draw_object_boxes(disp_frame, detections, primary_box=threat_box)
+        elif self.condition_flags.threat_box_visible:
+            self._draw_detector_status(disp_frame, detections)
 
         w1, h1 = self.lbl_driver_view.width(), self.lbl_driver_view.height()
         self.lbl_driver_view.setPixmap(self._cv2_to_qpixmap(disp_frame, w1, h1))
-
-        w2, h2 = self.lbl_depth_view.width(), self.lbl_depth_view.height()
-        self.lbl_depth_view.setPixmap(self._cv2_to_qpixmap(depth_color, w2, h2))
 
     def _cv2_to_qpixmap(self, cv_img, w, h):
         rgb_image = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)

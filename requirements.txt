@@ -16,4 +16,5 @@ aiohttp>=3.9
 torch>=2.0
 torchvision>=0.15
 timm>=0.9
+ultralytics>=8.3
 # For DepthPro: pip install -e . from https://github.com/Dariusan3/ml-depth-pro

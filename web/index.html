@@ -58,13 +58,22 @@
       margin-right: 8px;
     }
     .status .dot.live { background: var(--accent); box-shadow: 0 0 12px var(--accent); }
-    .frame-preview {
+    .frame-stage {
+      position: relative;
       width: 100%;
       aspect-ratio: 16 / 9;
       background: var(--bg);
       border: 1px solid var(--border);
       border-radius: 8px;
       margin-bottom: 16px;
+      overflow: hidden;
+    }
+    .frame-preview {
+      display: none;
+    }
+    .frame-canvas {
+      width: 100%;
+      height: 100%;
       object-fit: cover;
       display: block;
     }
@@ -122,7 +131,10 @@
       <span class="dot" id="conn-dot"></span><span id="conn-text">CONNECTING…</span>
     </div>
 
-    <img id="frame-preview" class="frame-preview" alt="frame" />
+    <div class="frame-stage">
+      <img id="frame-preview" class="frame-preview" alt="frame" />
+      <canvas id="frame-canvas-preview" class="frame-canvas" width="1024" height="576"></canvas>
+    </div>
     <div id="alert-bar" class="alert-bar">READY</div>
 
     <div class="controls">
@@ -134,6 +146,7 @@
     <div class="meta">
       <div>Condition: <b id="meta-condition">—</b> · Trial: <b id="meta-trial">—</b></div>
       <div>Latency (ping/server): <b id="meta-latency">—</b></div>
+      <div>Detector: <b id="meta-detector">—</b></div>
       <div>Hints: <b>VR trigger</b> or keyboard <b>B</b> / <b>SPACE</b> = brake.</div>
     </div>
   </div>

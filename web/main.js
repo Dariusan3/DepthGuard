@@ -9,12 +9,15 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // ─── DOM refs ────────────────────────────────────────────────
 const previewImg = document.getElementById('frame-preview');
+const previewCanvas = document.getElementById('frame-canvas-preview');
+const previewCtx = previewCanvas.getContext('2d');
 const alertBar   = document.getElementById('alert-bar');
 const connDot    = document.getElementById('conn-dot');
 const connText   = document.getElementById('conn-text');
 const metaCond   = document.getElementById('meta-condition');
 const metaTrial  = document.getElementById('meta-trial');
 const metaLat    = document.getElementById('meta-latency');
+const metaDetector = document.getElementById('meta-detector');
 const btnVR      = document.getElementById('btn-vr');
 const btnBrake   = document.getElementById('btn-brake');
 
@@ -24,6 +27,7 @@ const wsURL = `${wsProtocol}://${window.location.host}/ws`;
 let ws = null;
 let latestFrame = null;     // {imageBitmap, alert, trial}
 let latencyPing = 0;        // last measured RTT in ms
+let latestObjects = [];
 
 function connect() {
   setConn(false, 'CONNECTING…');
@@ -123,6 +127,8 @@ function handleFrame(msg) {
   const level = msg.alert?.level || 'SAFE';
   alertBar.textContent = level;
   alertBar.className = `alert-bar ${level}`;
+  latestObjects = Array.isArray(msg.objects) ? msg.objects : [];
+  if (metaDetector) metaDetector.textContent = msg.detector_status || `${latestObjects.length} objects`;
   // Trial metadata
   if (msg.trial?.label) metaTrial.textContent = msg.trial.label;
   pendingAlert = level;
@@ -137,6 +143,8 @@ frameCanvas.height = 576;
 const frameCtx = frameCanvas.getContext('2d');
 frameCtx.fillStyle = '#0C1021';
 frameCtx.fillRect(0, 0, frameCanvas.width, frameCanvas.height);
+previewCtx.fillStyle = '#0C1021';
+previewCtx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
 
 const windshieldTexture = new THREE.CanvasTexture(frameCanvas);
 windshieldTexture.colorSpace = THREE.SRGBColorSpace;
@@ -148,21 +156,90 @@ windshieldTexture.wrapT = THREE.ClampToEdgeWrapping;
 
 let hasFirstFrame = false;
 previewImg.addEventListener('load', () => {
-  // Letterbox-fit the incoming image into the fixed canvas
-  frameCtx.fillStyle = '#000';
-  frameCtx.fillRect(0, 0, frameCanvas.width, frameCanvas.height);
+  drawFrameWithObjects(frameCtx, frameCanvas);
+  drawFrameWithObjects(previewCtx, previewCanvas);
+  hasFirstFrame = true;
+  windshieldTexture.needsUpdate = true;
+});
+
+const objectColors = {
+  person: '#FF2D55',
+  bicycle: '#FF9F0A',
+  motorcycle: '#FF9F0A',
+  car: '#00E5A0',
+  bus: '#30D158',
+  truck: '#30D158',
+  'traffic light': '#FFD60A',
+  'stop sign': '#FF2D55',
+};
+
+function drawFrameWithObjects(ctx, canvas) {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
   const iw = previewImg.naturalWidth;
   const ih = previewImg.naturalHeight;
-  if (iw > 0 && ih > 0) {
-    const scale = Math.min(frameCanvas.width / iw, frameCanvas.height / ih);
-    const dw = iw * scale, dh = ih * scale;
-    const dx = (frameCanvas.width - dw) / 2;
-    const dy = (frameCanvas.height - dh) / 2;
-    frameCtx.drawImage(previewImg, dx, dy, dw, dh);
-    hasFirstFrame = true;
-    windshieldTexture.needsUpdate = true;
+  if (iw <= 0 || ih <= 0) return;
+
+  const scale = Math.min(canvas.width / iw, canvas.height / ih);
+  const dw = iw * scale;
+  const dh = ih * scale;
+  const dx = (canvas.width - dw) / 2;
+  const dy = (canvas.height - dh) / 2;
+  ctx.drawImage(previewImg, dx, dy, dw, dh);
+  drawObjectBoxes(ctx, latestObjects, dx, dy, scale);
+  drawDetectorStatus(ctx, latestObjects, canvas);
+}
+
+function drawObjectBoxes(ctx, objects, dx, dy, scale) {
+  ctx.save();
+  ctx.lineJoin = 'round';
+  for (const obj of objects) {
+    if (!obj.bbox || obj.bbox.length !== 4) continue;
+    const [x1, y1, x2, y2] = obj.bbox.map(Number);
+    const px = dx + x1 * scale;
+    const py = dy + y1 * scale;
+    const pw = Math.max(1, (x2 - x1) * scale);
+    const ph = Math.max(1, (y2 - y1) * scale);
+    const color = objectColors[obj.label] || '#E8ECF4';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(2, 3 * scale);
+    ctx.strokeRect(px, py, pw, ph);
+
+    const conf = Number.isFinite(obj.confidence) ? ` ${obj.confidence.toFixed(2)}` : '';
+    const depth = Number.isFinite(obj.depth) ? ` d=${obj.depth.toFixed(2)}` : '';
+    const text = `${String(obj.label || 'object').toUpperCase()}${conf}${depth}`;
+    ctx.font = '700 13px sans-serif';
+    const padX = 6;
+    const padY = 4;
+    const textW = ctx.measureText(text).width;
+    const labelH = 20;
+    const ly = Math.max(0, py - labelH - 2);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.9;
+    ctx.fillRect(px, ly, textW + padX * 2, labelH);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillText(text, px + padX, ly + labelH - padY - 2);
   }
-});
+  ctx.restore();
+}
+
+function drawDetectorStatus(ctx, objects, canvas) {
+  if (objects.length > 0) return;
+  const text = metaDetector?.textContent || '';
+  if (!text || text === '—') return;
+  ctx.save();
+  ctx.font = '700 13px sans-serif';
+  const shown = text.length > 86 ? `${text.slice(0, 83)}...` : text;
+  const w = ctx.measureText(shown).width + 18;
+  ctx.globalAlpha = 0.78;
+  ctx.fillStyle = '#0C1021';
+  ctx.fillRect(12, 12, Math.min(w, canvas.width - 24), 28);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#FFD60A';
+  ctx.fillText(shown, 21, 31);
+  ctx.restore();
+}
 
 // ─── Brake handling ──────────────────────────────────────────
 function sendBrake(source) {
