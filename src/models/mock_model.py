@@ -4,7 +4,9 @@ import numpy as np
 
 class MockModel:
     def __init__(self):
-        self.latency = 0.033  # Simulate ~30fps 
+        # Playback timing already controls the display rate; keep this lightweight
+        # so UI drawing and object detection do not unnecessarily miss frames.
+        self.latency = 0.008
 
     def inference(self, frame):
         """

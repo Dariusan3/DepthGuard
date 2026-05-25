@@ -2,6 +2,9 @@ import sys
 import os
 import cv2
 import time
+import json
+from pathlib import Path
+from urllib.request import urlopen
 import numpy as np
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTabWidget, QLabel, QPushButton, QComboBox,
@@ -9,7 +12,8 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QHeaderView, QFileDialog, QMessageBox, QGroupBox,
                              QGridLayout, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
                              QSpacerItem, QDialog)
-from PyQt5.QtCore import Qt, QTimer, pyqtSlot, QPropertyAnimation, QEasingCurve, QSize
+from PyQt5.QtCore import (Qt, QTimer, QProcess, pyqtSignal, pyqtSlot,
+                          QPropertyAnimation, QEasingCurve, QSize)
 from PyQt5.QtGui import QImage, QPixmap, QFont, QColor, QFontDatabase, QLinearGradient, QPalette
 import pyqtgraph as pg
 
@@ -43,6 +47,8 @@ C_DANGER_DIM    = "#CC1B3E"   # dimmed red
 C_WARN          = "#FF9F0A"   # warning amber
 C_CAUTION       = "#FFD60A"   # caution yellow
 C_SAFE          = "#30D158"   # safe green
+WEBXR_PUBLIC_URL = "https://ichthyosaurian-nonsatiric-kellan.ngrok-free.dev/"
+NGROK_API_URL = "http://127.0.0.1:4040/api/tunnels"
 
 STYLESHEET = f"""
 /* ── Global ──────────────────────────────────────── */
@@ -270,6 +276,9 @@ QLabel#MetricLabel {{
 """
 
 class MainWindow(QMainWindow):
+    remote_brake_received = pyqtSignal(dict)
+    remote_control_received = pyqtSignal(dict)
+
     def __init__(self, user=None):
         super().__init__()
         # Authenticated user (driver or admin). When None we default to admin
@@ -306,6 +315,14 @@ class MainWindow(QMainWindow):
         # WebXR companion (Option B) — lazy-init when user toggles it on
         self.webxr_server = None
         self._last_webxr_push_t = 0.0  # for throttling the frame push
+        self._tunnel_process = None
+        self._tunnel_public_url = None
+        self._tunnel_probe_attempts = 0
+        self._tunnel_probe_timer = QTimer(self)
+        self._tunnel_probe_timer.setInterval(500)
+        self._tunnel_probe_timer.timeout.connect(self._probe_tunnel_status)
+        self.remote_brake_received.connect(self._apply_remote_brake)
+        self.remote_control_received.connect(self._apply_remote_control)
 
         # State variables
         self.cap = None
@@ -317,7 +334,9 @@ class MainWindow(QMainWindow):
         self.target_fps = 30
         self._alert_flash_on = False
         self._last_object_detections = []
-        self._object_detection_stride = 3
+        # Reuse real YOLO detections between runs to keep boxes visible while
+        # leaving more time for smooth desktop playback.
+        self._object_detection_stride = 4
         self._last_detector_status = "YOLO: waiting"
 
         # Playlist state (HCI study mode)
@@ -353,6 +372,7 @@ class MainWindow(QMainWindow):
         self.setup_ui()
         self._setup_shortcuts()
         self._apply_role_visibility()
+        QTimer.singleShot(0, self._start_tunnel_if_needed)
 
     def _setup_shortcuts(self):
         """Keyboard shortcuts for participant-friendly use."""
@@ -938,14 +958,22 @@ class MainWindow(QMainWindow):
         stats_lay = QHBoxLayout()
         stats_lay.setSpacing(12)
 
-        card_total, self.lbl_stat_total = self._make_metric_card("TOTAL REACTIONS", "0")
+        card_hits, self.lbl_stat_hits = self._make_metric_card("HITS", "0")
+        card_misses, self.lbl_stat_misses = self._make_metric_card("MISSES", "0")
         card_avg, self.lbl_stat_avg = self._make_metric_card("AVG REACTION TIME", "-- ms")
-        card_correct, self.lbl_stat_correct = self._make_metric_card("CORRECT REACTIONS", "0%")
+        card_correct, self.lbl_stat_detection = self._make_metric_card("DETECTION RATE", "0%")
         card_false, self.lbl_stat_false = self._make_metric_card("FALSE ALARMS", "0")
 
-        # Color-code the correct reactions card accent
-        self.lbl_stat_correct.setStyleSheet(
+        self.lbl_stat_hits.setStyleSheet(
             f"color: {C_ACCENT}; font-size: 26px; font-weight: 700;"
+            f" border: none; background: transparent;"
+        )
+        self.lbl_stat_detection.setStyleSheet(
+            f"color: {C_ACCENT}; font-size: 26px; font-weight: 700;"
+            f" border: none; background: transparent;"
+        )
+        self.lbl_stat_misses.setStyleSheet(
+            f"color: {C_DANGER}; font-size: 26px; font-weight: 700;"
             f" border: none; background: transparent;"
         )
         self.lbl_stat_false.setStyleSheet(
@@ -953,18 +981,25 @@ class MainWindow(QMainWindow):
             f" border: none; background: transparent;"
         )
 
-        for card in [card_total, card_avg, card_correct, card_false]:
+        for card in [card_hits, card_misses, card_avg, card_correct, card_false]:
             stats_lay.addWidget(card)
 
         layout.addLayout(stats_lay)
 
+        self.lbl_questionnaire_status = QLabel("NASA-TLX: 0/3 blocks  |  SUS: pending  |  Trust: pending")
+        self.lbl_questionnaire_status.setStyleSheet(
+            f"color: {C_TEXT_DIM}; font-size: 12px; font-weight: 600;"
+            f" letter-spacing: 1px; padding: 8px 4px;"
+        )
+        layout.addWidget(self.lbl_questionnaire_status)
+
         # ── Reaction Log Table ──
-        table_label = self._make_section_label("REACTION LOG")
+        table_label = self._make_section_label("TRIAL OUTCOMES")
         layout.addWidget(table_label)
 
-        self.table_logs = QTableWidget(0, 5)
+        self.table_logs = QTableWidget(0, 7)
         self.table_logs.setHorizontalHeaderLabels(
-            ["TIMESTAMP", "FRAME", "ALERT LEVEL", "OUTCOME", "REACTION TIME (MS)"]
+            ["TIME", "CONDITION", "TRIAL", "EVENT", "EXPECTED", "OUTCOME", "RT (MS)"]
         )
         self.table_logs.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_logs.verticalHeader().setVisible(False)
@@ -1092,15 +1127,12 @@ class MainWindow(QMainWindow):
         finished = self.session_plan.blocks[self.session_block_index]
         next_idx = self.session_block_index + 1
 
+        if not self._capture_tlx_response(finished.block_num, display_name(finished.condition), finished.condition.value):
+            return
+
         if next_idx >= len(self.session_plan.blocks):
-            # Final block done — show end-of-session dialog, then complete screen
-            dlg = BlockPauseDialog(
-                completed_block=finished.block_num,
-                completed_condition=display_name(finished.condition),
-                next_block=0, next_condition="",
-                is_final=True, parent=self,
-            )
-            dlg.exec_()
+            if not self._capture_final_questionnaire():
+                return
             self._show_session_complete_screen()
             return
 
@@ -1114,6 +1146,39 @@ class MainWindow(QMainWindow):
         )
         dlg.exec_()  # blocks until researcher clicks Continue
         self._start_block(next_idx)
+
+    def _capture_tlx_response(self, block_num: int, condition_label: str, condition_value: str) -> bool:
+        from src.ui.study_questionnaire_dialogs import NASATLXDialog
+
+        dialog = NASATLXDialog(block_num, condition_label, parent=self)
+        if dialog.exec_() != QDialog.Accepted:
+            QMessageBox.warning(
+                self,
+                "NASA-TLX Not Saved",
+                "This block is paused. The NASA-TLX response is required before continuing.",
+            )
+            return False
+        self.data_logger.log_nasa_tlx(block_num, condition_value, dialog.scores())
+        self.update_analysis_tab()
+        return True
+
+    def _capture_final_questionnaire(self) -> bool:
+        from src.ui.study_questionnaire_dialogs import FinalQuestionnaireDialog
+
+        dialog = FinalQuestionnaireDialog(parent=self)
+        if dialog.exec_() != QDialog.Accepted:
+            QMessageBox.warning(
+                self,
+                "Final Questionnaire Not Saved",
+                "The final SUS, trust and demographics form is required before completing the session.",
+            )
+            return False
+        self.data_logger.log_final_questionnaire(
+            dialog.sus_responses(),
+            dialog.responses(),
+        )
+        self.update_analysis_tab()
+        return True
 
     def _show_session_complete_screen(self):
         """End-of-session UI state."""
@@ -1202,18 +1267,34 @@ class MainWindow(QMainWindow):
 
         expected = self.current_trial.get("expected_alert_level", "SAFE")
         if expected in ("CRITICAL", "WARNING"):
-            # Did the participant press brake during this trial?
-            already_pressed = any(
+            # Out-of-window presses still count as a miss, but score each trial once.
+            already_scored = any(
                 r.get("trial_id") == self.current_trial["id"]
+                and r.get("outcome") in ("hit", "miss")
                 for r in self.data_logger.reaction_data
             )
-            if not already_pressed:
+            if not already_scored:
                 self.data_logger.log_miss(
                     trial_id=self.current_trial["id"],
                     event_type=self.current_trial["event_type"],
                     expected_level=expected,
                     condition=self.condition.value,
+                    event_start_ms=int(self.current_trial.get("event_start_ms", 0)),
                 )
+                self.update_analysis_tab()
+        elif expected == "SAFE":
+            already_scored = any(
+                r.get("trial_id") == self.current_trial["id"]
+                and r.get("outcome") in ("false_alarm", "correct_rejection")
+                for r in self.data_logger.reaction_data
+            )
+            if not already_scored:
+                self.data_logger.log_correct_rejection(
+                    trial_id=self.current_trial["id"],
+                    event_type=self.current_trial["event_type"],
+                    condition=self.condition.value,
+                )
+                self.update_analysis_tab()
 
     def toggle_play(self):
         if not self.cap or not self.cap.isOpened():
@@ -1465,7 +1546,7 @@ class MainWindow(QMainWindow):
             self.toggle_play()
         self._was_playing_before_seek = False
 
-    def _render_seek_preview(self):
+    def _render_seek_preview(self, mirror_to_webxr=False):
         """Render the frame at the current cursor without advancing alerts/logs."""
         if self.cap is None:
             return
@@ -1473,11 +1554,11 @@ class MainWindow(QMainWindow):
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
         self._smoothed_threat_box = None  # reset tracker — discontinuity
         self._last_object_detections = []
-        self.process_next_frame(update_progress_only=True)
+        self.process_next_frame(update_progress_only=True, mirror_to_webxr=mirror_to_webxr)
         # Re-seek again so the next read picks up from the right place
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
 
-    def process_next_frame(self, update_progress_only=False):
+    def process_next_frame(self, update_progress_only=False, mirror_to_webxr=False):
         if self.cap is None:
             return
 
@@ -1512,7 +1593,11 @@ class MainWindow(QMainWindow):
 
             if self.current_frame % 10 == 0:
                 self.data_logger.log_frame(
-                    self.current_frame, alert_res["level"], alert_res["min_depth"]
+                    self.current_frame,
+                    alert_res["level"],
+                    alert_res["min_depth"],
+                    condition=self.condition.value,
+                    trial_id=self.current_trial.get("id", "") if self.current_trial else "",
                 )
 
             # Audio gated by current condition (NO_ALERT condition silences it)
@@ -1551,6 +1636,8 @@ class MainWindow(QMainWindow):
             alert_res["objects"] = self._detection_payloads(detections)
             alert_res["detector_status"] = self._last_detector_status
             self.update_video_panels(frame, depth, alert_res, detections)
+            if mirror_to_webxr and self.webxr_server is not None and self.webxr_server.is_running():
+                self.webxr_server.push_frame(frame, depth, alert_res, None, detections)
 
     def _detect_objects_for_frame(self, frame, depth_map):
         """
@@ -1856,10 +1943,15 @@ class MainWindow(QMainWindow):
         h_img, w_img, ch = rgb_image.shape
         bytes_per_line = ch * w_img
         qimg = QImage(rgb_image.data, w_img, h_img, bytes_per_line, QImage.Format_RGB888)
-        return QPixmap.fromImage(qimg).scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        transform = Qt.FastTransformation if self.is_playing else Qt.SmoothTransformation
+        return QPixmap.fromImage(qimg).scaled(w, h, Qt.KeepAspectRatio, transform)
 
     # ── Status UI with flash animation ───────────────────────────
     def _apply_status_style(self, level, min_depth, avg_depth):
+        fps_val = (
+            self.perf_monitor.fps_history[-1]
+            if self.perf_monitor.fps_history else 0
+        )
         # Hide the alert bar in conditions that don't use it (NO_ALERT, AR_HUD)
         if not self.condition_flags.alert_bar_visible:
             self.lbl_status_box.setText("—")
@@ -1871,7 +1963,6 @@ class MainWindow(QMainWindow):
                 f"CONDITION: {self.condition.value.replace('_', ' ')}"
             )
             self._flash_timer.stop()
-            fps_val = self.perf_monitor.get_current_stats()['fps']
             self.lbl_current_fps.setText(f"{fps_val:.0f} FPS")
             return
 
@@ -1905,7 +1996,6 @@ class MainWindow(QMainWindow):
         a_str = f"{avg_depth:.2f}" if isinstance(avg_depth, float) else str(avg_depth)
         self.lbl_status_metrics.setText(f"MIN DEPTH: {m_str}    AVG DEPTH: {a_str}")
 
-        fps_val = self.perf_monitor.get_current_stats()['fps']
         self.lbl_current_fps.setText(f"{fps_val:.0f} FPS")
         fps_color = C_ACCENT if fps_val >= self.target_fps else C_DANGER
         self.lbl_current_fps.setStyleSheet(
@@ -1935,13 +2025,17 @@ class MainWindow(QMainWindow):
         if not self.is_playing or self._between_trials:
             return
 
-        rt_ms = self.data_logger.log_reaction(
+        remote = getattr(self, "_last_remote_brake", None)
+        self.data_logger.log_reaction(
             self.current_frame,
             self.audio_system.current_level,
             trial=self.current_trial,
             trial_start_time=self.trial_start_time,
             condition=self.condition.value,
+            response_source=remote.get("source", "desktop") if remote else "desktop",
+            network_latency_ms=remote.get("latency_hint_ms", 0) if remote else 0,
         )
+        self._last_remote_brake = None
 
         # Brief visual flash on brake button
         self.btn_brake.setStyleSheet(
@@ -1951,36 +2045,6 @@ class MainWindow(QMainWindow):
         )
         QTimer.singleShot(200, lambda: self.btn_brake.setStyleSheet(""))
 
-        # Push to log table
-        row = self.table_logs.rowCount()
-        self.table_logs.insertRow(row)
-
-        ts = time.strftime("%H:%M:%S")
-        level = self.audio_system.current_level
-
-        # Use the latest reaction's outcome for the table display
-        last = self.data_logger.reaction_data[-1] if self.data_logger.reaction_data else {}
-        outcome = last.get("outcome", "—").upper()
-
-        items = [ts, str(self.current_frame), level, outcome, str(rt_ms)]
-        for col, val in enumerate(items):
-            item = QTableWidgetItem(val)
-            item.setTextAlignment(Qt.AlignCenter)
-            if col == 2:
-                level_colors = {
-                    "CRITICAL": C_DANGER, "WARNING": C_WARN,
-                    "CAUTION": C_CAUTION, "SAFE": C_SAFE
-                }
-                item.setForeground(QColor(level_colors.get(level, C_TEXT)))
-            elif col == 3:
-                outcome_colors = {
-                    "HIT": C_SAFE, "FALSE_ALARM": C_DANGER,
-                    "OUT_OF_WINDOW": C_WARN, "MISS": C_DANGER,
-                }
-                item.setForeground(QColor(outcome_colors.get(outcome, C_TEXT)))
-            self.table_logs.setItem(row, col, item)
-
-        self.table_logs.scrollToBottom()
         self.update_analysis_tab()
 
     def update_monitor_tab(self):
@@ -2027,10 +2091,50 @@ class MainWindow(QMainWindow):
 
     def update_analysis_tab(self):
         stats = self.data_logger.get_session_stats()
-        self.lbl_stat_total.setText(str(stats['total']))
+        self.lbl_stat_hits.setText(str(stats['hits']))
+        self.lbl_stat_misses.setText(str(stats['misses']))
         self.lbl_stat_avg.setText(f"{stats['avg_time']} ms")
-        self.lbl_stat_correct.setText(f"{stats['correct_pct']}%")
-        self.lbl_stat_false.setText(str(stats['false_alarms']))
+        self.lbl_stat_detection.setText(f"{stats['detection_rate']}%")
+        self.lbl_stat_false.setText(f"{stats['false_alarms']} ({stats['false_alarm_rate']}%)")
+
+        sus = stats["sus_score"]
+        sus_text = f"{sus:.1f}" if sus is not None else "pending"
+        trust = self.data_logger.participant_data.get("trust_score", "pending")
+        self.lbl_questionnaire_status.setText(
+            f"NASA-TLX: {stats['tlx_blocks']}/3 blocks  |  SUS: {sus_text}  |  Trust: {trust}"
+        )
+
+        self.table_logs.setRowCount(0)
+        for row_data in self.data_logger.reaction_data:
+            row = self.table_logs.rowCount()
+            self.table_logs.insertRow(row)
+            timestamp = row_data.get("timestamp", 0)
+            ts = time.strftime("%H:%M:%S", time.localtime(timestamp)) if timestamp else ""
+            outcome = row_data.get("outcome", "").upper()
+            values = [
+                ts,
+                row_data.get("condition", ""),
+                str(row_data.get("trial_id", "")),
+                row_data.get("event_type", ""),
+                row_data.get("expected_level", ""),
+                outcome,
+                str(row_data.get("reaction_time_ms", "")),
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                item.setTextAlignment(Qt.AlignCenter)
+                if col == 5:
+                    outcome_colors = {
+                        "HIT": C_SAFE,
+                        "FALSE_ALARM": C_DANGER,
+                        "OUT_OF_WINDOW": C_WARN,
+                        "MISS": C_DANGER,
+                        "DUPLICATE_PRESS": C_TEXT_DIM,
+                        "CORRECT_REJECTION": C_SAFE,
+                    }
+                    item.setForeground(QColor(outcome_colors.get(outcome, C_TEXT)))
+                self.table_logs.setItem(row, col, item)
+        self.table_logs.scrollToBottom()
 
     def start_session(self):
         """Start a structured HCI session with Latin-square block ordering."""
@@ -2063,12 +2167,19 @@ class MainWindow(QMainWindow):
         self.session_mode = True       # vs. solo playlist mode
 
         self.clear_session()
+        self.data_logger.set_participant_id(part_id)
         self.data_logger.session_id = f"{part_id}_{time.strftime('%Y%m%d_%H%M%S')}"
         self.data_logger.log_file = os.path.join(
             self.data_logger.log_dir, f"session_{self.data_logger.session_id}.csv"
         )
         self.data_logger.reaction_file = os.path.join(
             self.data_logger.log_dir, f"reactions_{self.data_logger.session_id}.csv"
+        )
+        self.data_logger.questionnaire_file = os.path.join(
+            self.data_logger.log_dir, f"questionnaires_{self.data_logger.session_id}.csv"
+        )
+        self.data_logger.participant_file = os.path.join(
+            self.data_logger.log_dir, f"participant_{self.data_logger.session_id}.csv"
         )
         self.data_logger.report_file = os.path.join(
             self.data_logger.log_dir, f"report_{self.data_logger.session_id}.txt"
@@ -2121,6 +2232,7 @@ class MainWindow(QMainWindow):
     def save_session(self):
         """Save the session — let the user pick where (Desktop, Downloads, anywhere)."""
         part_id = self.inp_participant.text() or "UNKNOWN"
+        self.data_logger.set_participant_id(part_id)
 
         # Default to the user's Desktop / Downloads, fall back to project logs/
         home = os.path.expanduser("~")
@@ -2149,6 +2261,8 @@ class MainWindow(QMainWindow):
         self.data_logger.log_dir = out_dir
         self.data_logger.log_file = os.path.join(out_dir, f"session_{self.data_logger.session_id}.csv")
         self.data_logger.reaction_file = os.path.join(out_dir, f"reactions_{self.data_logger.session_id}.csv")
+        self.data_logger.questionnaire_file = os.path.join(out_dir, f"questionnaires_{self.data_logger.session_id}.csv")
+        self.data_logger.participant_file = os.path.join(out_dir, f"participant_{self.data_logger.session_id}.csv")
         self.data_logger.report_file = os.path.join(out_dir, f"report_{self.data_logger.session_id}.txt")
 
         self.data_logger.save_session(part_id)
@@ -2158,7 +2272,9 @@ class MainWindow(QMainWindow):
             f"Session saved to:\n\n{out_dir}\n\n"
             f"Files:\n"
             f"  • session_{self.data_logger.session_id}.csv (per-frame log)\n"
-            f"  • reactions_{self.data_logger.session_id}.csv (brake presses)\n"
+            f"  • reactions_{self.data_logger.session_id}.csv (trial outcomes)\n"
+            f"  • questionnaires_{self.data_logger.session_id}.csv (NASA-TLX per condition)\n"
+            f"  • participant_{self.data_logger.session_id}.csv (SUS + demographics)\n"
             f"  • report_{self.data_logger.session_id}.txt (summary)"
         )
         self.update_analysis_tab()
@@ -2169,16 +2285,106 @@ class MainWindow(QMainWindow):
         self.update_analysis_tab()
 
     def closeEvent(self, event):
+        self._closing = True
         self._flash_timer.stop()
+        self._tunnel_probe_timer.stop()
         if self.webxr_server is not None:
             try:
                 self.webxr_server.stop()
             except Exception:
                 pass
+        if self._tunnel_process is not None and self._tunnel_process.state() != QProcess.NotRunning:
+            self._tunnel_process.terminate()
+            if not self._tunnel_process.waitForFinished(750):
+                self._tunnel_process.kill()
+                self._tunnel_process.waitForFinished(250)
         self.audio_system.cleanup()
         event.accept()
 
     # ── WebXR companion ──────────────────────────────────────────
+    def _start_tunnel_if_needed(self):
+        """Start the static ngrok tunnel unless an existing process already serves WebXR."""
+        existing_url = self._find_running_tunnel()
+        if existing_url:
+            self._tunnel_public_url = existing_url
+            self._show_tunnel_status("TUNNEL ONLINE", existing_url)
+            return
+
+        script_path = Path(__file__).resolve().parent.parent.parent / "scripts" / "start_tunnel.sh"
+        if not script_path.exists():
+            self._show_tunnel_status("TUNNEL SCRIPT NOT FOUND")
+            return
+
+        self._tunnel_process = QProcess(self)
+        self._tunnel_process.setWorkingDirectory(str(script_path.parent.parent))
+        self._tunnel_process.setProcessChannelMode(QProcess.MergedChannels)
+        self._tunnel_process.readyReadStandardOutput.connect(self._drain_tunnel_output)
+        self._tunnel_process.errorOccurred.connect(self._on_tunnel_error)
+        self._tunnel_process.finished.connect(self._on_tunnel_finished)
+        self._show_tunnel_status("TUNNEL STARTING...")
+        self._tunnel_process.start(str(script_path), [])
+        self._tunnel_probe_attempts = 0
+        self._tunnel_probe_timer.start()
+
+    def _find_running_tunnel(self):
+        """Return an ngrok public URL already forwarding to the WebXR endpoint."""
+        try:
+            with urlopen(NGROK_API_URL, timeout=0.25) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return None
+
+        for tunnel in payload.get("tunnels", []):
+            public_url = str(tunnel.get("public_url", ""))
+            config = tunnel.get("config") or {}
+            addr = str(config.get("addr", ""))
+            if WEBXR_PUBLIC_URL.rstrip("/") in public_url:
+                return public_url.rstrip("/") + "/"
+            if addr.endswith(":8765") and public_url.startswith("https://"):
+                return public_url.rstrip("/") + "/"
+        return None
+
+    def _probe_tunnel_status(self):
+        """Wait for a just-started ngrok child to publish the WebXR URL."""
+        public_url = self._find_running_tunnel()
+        if public_url:
+            self._tunnel_public_url = public_url
+            self._tunnel_probe_timer.stop()
+            self._show_tunnel_status("TUNNEL ONLINE", public_url)
+            return
+
+        self._tunnel_probe_attempts += 1
+        if self._tunnel_probe_attempts >= 20:
+            self._tunnel_probe_timer.stop()
+            self._show_tunnel_status("TUNNEL NOT READY - check ngrok authentication")
+
+    def _on_tunnel_error(self, _error):
+        if not getattr(self, "_closing", False):
+            self._tunnel_probe_timer.stop()
+            self._show_tunnel_status("TUNNEL FAILED - run scripts/start_tunnel.sh manually")
+
+    def _drain_tunnel_output(self):
+        """Discard ngrok terminal UI output so a long app session stays bounded."""
+        if self._tunnel_process is not None:
+            self._tunnel_process.readAllStandardOutput()
+
+    def _on_tunnel_finished(self, _exit_code, _exit_status):
+        if not getattr(self, "_closing", False) and not self._tunnel_public_url:
+            self._tunnel_probe_timer.stop()
+            self._show_tunnel_status("TUNNEL STOPPED - check ngrok configuration")
+
+    def _show_tunnel_status(self, status, public_url=None):
+        if public_url:
+            self.lbl_webxr_url.setText(
+                f"{status}: <a href='{public_url}' style='color:{C_ACCENT}; "
+                f"text-decoration:underline;'>{public_url}</a>"
+            )
+            self.lbl_webxr_url.setToolTip("Open the public WebXR URL")
+        else:
+            self.lbl_webxr_url.setText(status)
+            self.lbl_webxr_url.setToolTip("")
+        self.lbl_webxr_url.show()
+
     def toggle_webxr_server(self):
         """Start or stop the WebXR companion server."""
         if self.webxr_server is None or not self.webxr_server.is_running():
@@ -2195,6 +2401,7 @@ class MainWindow(QMainWindow):
 
             self.webxr_server = WebXRServer(
                 on_brake=self._handle_remote_brake,
+                on_control=self._handle_remote_control,
             )
             try:
                 self.webxr_server.start()
@@ -2204,16 +2411,13 @@ class MainWindow(QMainWindow):
                 self.webxr_server = None
                 return
 
-            url = self.webxr_server.public_url_hint()
+            local_url = self.webxr_server.public_url_hint()
+            url = self._tunnel_public_url or local_url
             port = self.webxr_server.port
             self.btn_webxr.setText("  📡  WebXR: ON")
 
             # Persistent clickable URL in the session row
-            self.lbl_webxr_url.setText(
-                f"🔗 <a href='{url}' style='color:{C_ACCENT}; text-decoration:underline;'>{url}</a>"
-            )
-            self.lbl_webxr_url.setToolTip("Click to open the WebXR preview in your browser")
-            self.lbl_webxr_url.show()
+            self._show_tunnel_status("WEBXR READY", url)
 
             import webbrowser
             msg = QMessageBox(self)
@@ -2223,10 +2427,10 @@ class MainWindow(QMainWindow):
             msg.setTextInteractionFlags(Qt.TextBrowserInteraction)
             msg.setText(
                 f"<b>WebXR companion is live.</b><br><br>"
-                f"Open on the headset's browser (same network):<br>"
+                f"Open on the headset's browser:<br>"
                 f"<a href='{url}' style='color:#00E5A0; font-weight:700;'>{url}</a><br><br>"
-                f"For remote access, run:<br>"
-                f"<code>ngrok http {port}</code> &nbsp;and share the <b>https://</b> URL.<br><br>"
+                f"Local fallback URL: <code>{local_url}</code><br>"
+                f"Port: <code>{port}</code><br><br>"
                 f"<i>The link will stay visible next to the WebXR button so you can reopen it any time.</i>"
             )
             btn_open = msg.addButton("  Open in Browser  ", QMessageBox.ActionRole)
@@ -2242,13 +2446,17 @@ class MainWindow(QMainWindow):
                 pass
             self.btn_webxr.setText("  📡  WebXR: OFF")
             self.btn_webxr.setChecked(False)
-            self.lbl_webxr_url.hide()
-            self.lbl_webxr_url.setText("")
+            if self._tunnel_public_url:
+                self._show_tunnel_status("TUNNEL ONLINE - WEBXR OFF", self._tunnel_public_url)
+            else:
+                self.lbl_webxr_url.hide()
+                self.lbl_webxr_url.setText("")
 
     def _handle_remote_brake(self, msg: dict):
         """Marshal a WebXR brake event onto the Qt main thread."""
-        QTimer.singleShot(0, lambda: self._apply_remote_brake(msg))
+        self.remote_brake_received.emit(msg)
 
+    @pyqtSlot(dict)
     def _apply_remote_brake(self, msg: dict):
         """Treat a WebXR brake press identically to a local SPACE press."""
         # Stash source + network-latency hint for the next CSV row to pick up
@@ -2258,3 +2466,33 @@ class MainWindow(QMainWindow):
         }
         # Reuse the existing brake logic — it handles trial scoring + logging
         self.record_reaction()
+
+    def _handle_remote_control(self, msg: dict):
+        """Marshal a WebXR transport command onto the Qt main thread."""
+        self.remote_control_received.emit(msg)
+
+    @pyqtSlot(dict)
+    def _apply_remote_control(self, msg: dict):
+        """Mirror desktop playback and seeking controls for the VR client."""
+        action = msg.get("action")
+        if action == "toggle_play":
+            self.toggle_play()
+        elif action == "stop":
+            self.stop_video()
+        elif action in ("seek_back", "seek_forward"):
+            try:
+                seconds = float(msg.get("seconds", 5))
+            except (TypeError, ValueError):
+                seconds = 5.0
+            seconds = min(max(seconds, 1.0), 30.0)
+            self._seek_relative_seconds(-seconds if action == "seek_back" else seconds)
+
+    def _seek_relative_seconds(self, seconds: float):
+        """Seek from WebXR with the same video-position behavior as the desktop slider."""
+        if not self.cap or not self.cap.isOpened() or self._between_trials:
+            return
+        offset = int(round(seconds * self.fps))
+        target = max(0, min(max(0, self.total_frames - 1), self.current_frame + offset))
+        self.set_frame_position(target)
+        self.slider_progress.setValue(target)
+        self._render_seek_preview(mirror_to_webxr=True)

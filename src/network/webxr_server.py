@@ -9,7 +9,7 @@ Endpoints:
     GET  /static/<file>     → serves web/<file>
     WS   /ws                → live stream:
                               server →  frame (JPEG b64) + depth (optional) + alert
-                              client →  brake-press events with timestamps
+                              client →  brake/control events with timestamps
 
 Designed for two deployment modes:
     A. Local LAN:   point the headset at http://<your-mac-ip>:8765
@@ -57,8 +57,10 @@ class WebXRServer:
         self,
         port: int = DEFAULT_PORT,
         on_brake: Callable[[dict], None] | None = None,
-        jpeg_quality: int = 60,
-        frame_max_width: int = 960,
+        on_control: Callable[[dict], None] | None = None,
+        jpeg_quality: int = 50,
+        frame_max_width: int = 720,
+        include_depth: bool = False,
     ):
         if web is None:
             raise RuntimeError(
@@ -66,8 +68,10 @@ class WebXRServer:
             )
         self.port = port
         self.on_brake = on_brake
+        self.on_control = on_control
         self.jpeg_quality = jpeg_quality
         self.frame_max_width = frame_max_width
+        self.include_depth = include_depth
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -238,13 +242,20 @@ class WebXRServer:
             return
         mtype = data.get("type")
         if mtype == "brake" and self.on_brake:
-            # Invoke the callback on the *main thread* via a marshaling layer
-            # (the caller is expected to handle thread-safety — for PyQt,
-            # see MainWindow._handle_remote_brake which uses QTimer.singleShot).
+            # The caller is expected to marshal this callback onto its UI thread;
+            # MainWindow does that through queued Qt signals.
             try:
                 self.on_brake(data)
             except Exception as e:
                 print(f"[WebXR] on_brake handler error: {e}")
+        elif mtype == "control" and self.on_control:
+            action = data.get("action")
+            if action not in {"toggle_play", "stop", "seek_back", "seek_forward"}:
+                return
+            try:
+                self.on_control(data)
+            except Exception as e:
+                print(f"[WebXR] on_control handler error: {e}")
         elif mtype == "ping":
             # Echo back for latency calibration
             asyncio.run_coroutine_threadsafe(
@@ -285,7 +296,7 @@ class WebXRServer:
             frame_bgr = cv2.resize(frame_bgr, new_size, interpolation=cv2.INTER_AREA)
             scale_x = new_size[0] / w
             scale_y = new_size[1] / h
-            if depth_map is not None:
+            if self.include_depth and depth_map is not None:
                 depth_map = cv2.resize(depth_map, new_size, interpolation=cv2.INTER_LINEAR)
         out_h, out_w = frame_bgr.shape[:2]
 
@@ -296,7 +307,7 @@ class WebXRServer:
 
         # Depth as low-res grayscale PNG (compact)
         depth_b64 = ""
-        if depth_map is not None:
+        if self.include_depth and depth_map is not None:
             d8 = (np.clip(depth_map, 0, 1) * 255).astype(np.uint8)
             d8 = cv2.resize(d8, (160, max(1, int(160 * d8.shape[0] / d8.shape[1]))))
             ok2, png = cv2.imencode(".png", d8)

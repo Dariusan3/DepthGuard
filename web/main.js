@@ -20,6 +20,8 @@ const metaLat    = document.getElementById('meta-latency');
 const metaDetector = document.getElementById('meta-detector');
 const btnVR      = document.getElementById('btn-vr');
 const btnBrake   = document.getElementById('btn-brake');
+const btnPlayback = document.getElementById('btn-playback');
+const btnStop    = document.getElementById('btn-stop');
 
 // ─── WebSocket setup ─────────────────────────────────────────
 const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -28,6 +30,7 @@ let ws = null;
 let latestFrame = null;     // {imageBitmap, alert, trial}
 let latencyPing = 0;        // last measured RTT in ms
 let latestObjects = [];
+let vrPlayButton = null;
 
 function connect() {
   setConn(false, 'CONNECTING…');
@@ -67,7 +70,7 @@ function handleMessage(ev) {
     latencyPing = Math.round(performance.now() - msg.t_client_echo);
     metaLat.textContent = `${latencyPing} ms`;
   } else if (msg.type === 'playback') {
-    setPaused(msg.data && !msg.data.playing);
+    setPlaybackState(Boolean(msg.data && msg.data.playing));
   } else if (msg.type === 'trial_start' || msg.type === 'block_start' || msg.type === 'session_end') {
     if (msg.data && msg.data.label) {
       metaTrial.textContent = msg.data.label;
@@ -111,6 +114,14 @@ pauseLabel.position.set(0, 0.8, 0.05);
 function setPaused(paused) {
   pauseBanner.style.display = paused ? 'block' : 'none';
   pauseLabel.material.opacity = paused ? 1.0 : 0.0;
+}
+
+function setPlaybackState(playing) {
+  setPaused(!playing);
+  btnPlayback.textContent = playing ? 'PAUSE' : 'PLAY';
+  if (vrPlayButton) {
+    updateVRControlButton(vrPlayButton, playing ? 'PAUSE' : 'PLAY');
+  }
 }
 
 let frameCount = 0;
@@ -255,7 +266,21 @@ function sendBrake(source) {
   setTimeout(() => btnBrake.style.filter = '', 150);
 }
 
+function sendControl(action, source, extra = {}) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({
+    type: 'control',
+    action,
+    source,
+    t_client: performance.now(),
+    latency_hint_ms: latencyPing,
+    ...extra,
+  }));
+}
+
 btnBrake.addEventListener('click', () => sendBrake('click'));
+btnPlayback.addEventListener('click', () => sendControl('toggle_play', 'web'));
+btnStop.addEventListener('click', () => sendControl('stop', 'web'));
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space' || e.code === 'KeyB') {
     e.preventDefault();
@@ -269,6 +294,9 @@ scene.background = new THREE.Color(0x06080F);
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
 camera.position.set(0, 1.6, 0);
+const playerRig = new THREE.Group();
+scene.add(playerRig);
+playerRig.add(camera);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(window.devicePixelRatio);
@@ -339,6 +367,85 @@ windshieldGroup.add(glow);
 // Now that the group exists, attach the pause label that was created earlier
 windshieldGroup.add(pauseLabel);
 
+// VR-only control console. DOM buttons are not visible in immersive WebXR, so
+// this panel is part of the scene and follows the movable windshield.
+const vrControlTargets = [];
+const vrControlPanel = new THREE.Group();
+vrControlPanel.position.set(0, -0.98, 0.035);
+windshieldGroup.add(vrControlPanel);
+
+const vrPanelBack = new THREE.Mesh(
+  new THREE.PlaneGeometry(2.42, 0.64),
+  new THREE.MeshBasicMaterial({ color: 0x0C1021, transparent: true, opacity: 0.95 })
+);
+vrPanelBack.position.set(0, -0.05, -0.012);
+vrControlPanel.add(vrPanelBack);
+
+function updateVRControlButton(button, label = button.userData.label, hovered = button.userData.hovered) {
+  button.userData.label = label;
+  button.userData.hovered = hovered;
+  const ctx = button.userData.ctx;
+  const canvas = button.userData.canvas;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = hovered ? button.userData.hoverColor : button.userData.color;
+  ctx.fillRect(4, 4, canvas.width - 8, canvas.height - 8);
+  ctx.strokeStyle = hovered ? '#FFFFFF' : '#24304D';
+  ctx.lineWidth = hovered ? 5 : 3;
+  ctx.strokeRect(4, 4, canvas.width - 8, canvas.height - 8);
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = '700 34px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, canvas.width / 2, canvas.height / 2);
+  button.userData.texture.needsUpdate = true;
+}
+
+function makeVRControlButton(label, action, color, hoverColor, x, y) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 320;
+  canvas.height = 112;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const button = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.72, 0.19),
+    new THREE.MeshBasicMaterial({ map: texture, transparent: true, side: THREE.DoubleSide })
+  );
+  button.position.set(x, y, 0);
+  button.userData = {
+    action, label, color, hoverColor, canvas, texture,
+    ctx: canvas.getContext('2d'), hovered: false,
+  };
+  updateVRControlButton(button);
+  vrControlTargets.push(button);
+  vrControlPanel.add(button);
+  return button;
+}
+
+vrPlayButton = makeVRControlButton('PLAY', 'toggle_play', '#007E63', '#00B887', -0.78, 0.12);
+makeVRControlButton('BACK 5S', 'seek_back', '#273451', '#3A4D75', 0, 0.12);
+makeVRControlButton('FWD 5S', 'seek_forward', '#273451', '#3A4D75', 0.78, 0.12);
+makeVRControlButton('BRAKE', 'brake', '#C91F42', '#FF2D55', -0.78, -0.12);
+makeVRControlButton('STOP', 'stop', '#273451', '#495D87', 0, -0.12);
+makeVRControlButton('RESET', 'reset', '#273451', '#495D87', 0.78, -0.12);
+
+const vrHintCanvas = document.createElement('canvas');
+vrHintCanvas.width = 960;
+vrHintCanvas.height = 56;
+const vrHintCtx = vrHintCanvas.getContext('2d');
+vrHintCtx.fillStyle = '#9BA8BF';
+vrHintCtx.font = '600 24px sans-serif';
+vrHintCtx.textAlign = 'center';
+vrHintCtx.textBaseline = 'middle';
+vrHintCtx.fillText('POINT + TRIGGER = SELECT   |   GRIP + DRAG = MOVE SCREEN', 480, 28);
+const vrHintTexture = new THREE.CanvasTexture(vrHintCanvas);
+vrHintTexture.colorSpace = THREE.SRGBColorSpace;
+const vrHint = new THREE.Mesh(
+  new THREE.PlaneGeometry(2.24, 0.13),
+  new THREE.MeshBasicMaterial({ map: vrHintTexture, transparent: true })
+);
+vrHint.position.set(0, -0.29, 0);
+vrControlPanel.add(vrHint);
+
 // Track alert updates (texture comes from the <img> element directly)
 let pendingAlert = null;
 const alertColors = {
@@ -355,17 +462,17 @@ function applyAlertVisuals(level) {
   stripMat.opacity = level === 'CRITICAL' ? 0.85 : 0;
 }
 
-// VR controllers — trigger = brake, grip (squeeze) = grab-to-move windshield,
-// A/X or B/Y button = reset windshield + camera to default position.
+// VR controllers: trigger brakes, grip repositions the windshield, and face
+// buttons provide playback controls while retaining a reset shortcut.
 const xrControllers = [];
 
 function buildControllerVisual() {
-  // Visible 1m laser pointer pointing forward from the controller, plus a small
+  // Visible laser pointer pointing forward from the controller, plus a small
   // sphere at the controller tip. Tip color reflects current button state.
   const group = new THREE.Group();
 
   const rayGeom = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1),
+    new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -3),
   ]);
   const rayMat = new THREE.LineBasicMaterial({ color: 0x00E5A0, transparent: true, opacity: 0.6 });
   const ray = new THREE.Line(rayGeom, rayMat);
@@ -377,6 +484,48 @@ function buildControllerVisual() {
   group.add(tip);
 
   return { group, ray, tip, rayMat, tipMat };
+}
+
+const vrControlRaycaster = new THREE.Raycaster();
+const vrControlRayRotation = new THREE.Matrix4();
+let hoveredVRControl = null;
+
+function targetUnderController(controller) {
+  controller.updateWorldMatrix(true, false);
+  vrControlPanel.updateWorldMatrix(true, true);
+  vrControlRayRotation.identity().extractRotation(controller.matrixWorld);
+  vrControlRaycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+  vrControlRaycaster.ray.direction.set(0, 0, -1).applyMatrix4(vrControlRayRotation).normalize();
+  const hits = vrControlRaycaster.intersectObjects(vrControlTargets, false);
+  return hits.length ? hits[0].object : null;
+}
+
+function updateVRControlHover() {
+  let nextHovered = null;
+  for (const controller of xrControllers) {
+    const target = targetUnderController(controller);
+    if (target) {
+      nextHovered = target;
+      break;
+    }
+  }
+  if (nextHovered === hoveredVRControl) return;
+  if (hoveredVRControl) updateVRControlButton(hoveredVRControl, hoveredVRControl.userData.label, false);
+  hoveredVRControl = nextHovered;
+  if (hoveredVRControl) updateVRControlButton(hoveredVRControl, hoveredVRControl.userData.label, true);
+}
+
+function activateVRControl(button) {
+  const action = button.userData.action;
+  if (action === 'brake') {
+    sendBrake('controller_panel');
+  } else if (action === 'reset') {
+    resetView();
+  } else if (action === 'seek_back' || action === 'seek_forward') {
+    sendControl(action, 'controller_panel', { seconds: 5 });
+  } else {
+    sendControl(action, 'controller_panel');
+  }
 }
 
 function setupController(index) {
@@ -395,9 +544,16 @@ function setupController(index) {
     console.log(`[WebXR] controller ${index} disconnected`);
   });
 
-  // ── Trigger → brake ──
+  // Trigger selects an in-world control when pointed at it; elsewhere it brakes.
   ctrl.addEventListener('selectstart', () => {
     console.log(`[WebXR] controller ${index} trigger`);
+    const target = targetUnderController(ctrl);
+    if (target) {
+      activateVRControl(target);
+      vis.tipMat.color.setHex(0x00E5A0);
+      setTimeout(() => vis.tipMat.color.setHex(0xE8ECF4), 200);
+      return;
+    }
     vis.tipMat.color.setHex(0xFF2D55);   // tip turns red briefly
     setTimeout(() => vis.tipMat.color.setHex(0xE8ECF4), 200);
     sendBrake('controller');
@@ -419,36 +575,43 @@ function setupController(index) {
     scene.attach(windshieldGroup);
   });
 
-  scene.add(ctrl);
+  playerRig.add(ctrl);
   xrControllers.push(ctrl);
 }
 setupController(0);
 setupController(1);
 
-// Reset button — A/X (button index 4) or B/Y (button index 5) on Quest controllers.
-// Polled in the animation loop with a debounce so a single press doesn't fire
-// every frame the button is held.
-let _resetCooldown = 0;
-function pollResetButton(dtSec) {
+const controllerButtonState = new Map();
+
+function pressedOnce(source, index) {
+  const key = `${source.handedness}:${index}`;
+  const pressed = Boolean(source.gamepad.buttons[index]?.pressed);
+  const prior = controllerButtonState.get(key) || false;
+  controllerButtonState.set(key, pressed);
+  return pressed && !prior;
+}
+
+function resetView() {
+  if (windshieldGroup.parent !== scene) scene.attach(windshieldGroup);
+  windshieldGroup.position.copy(WINDSHIELD_DEFAULT_POS);
+  windshieldGroup.quaternion.copy(WINDSHIELD_DEFAULT_QUAT);
+  windshieldGroup.scale.set(1, 1, 1);
+  playerRig.position.set(0, 0, 0);
+  playerRig.rotation.set(0, 0, 0);
+  console.log('[WebXR] reset windshield + player rig');
+}
+
+function pollControllerButtons() {
   const session = renderer.xr.getSession();
   if (!session) return;
-  _resetCooldown = Math.max(0, _resetCooldown - dtSec);
-  if (_resetCooldown > 0) return;
   for (const src of session.inputSources) {
     if (!src.gamepad) continue;
-    const btns = src.gamepad.buttons;
-    if ((btns[4] && btns[4].pressed) || (btns[5] && btns[5].pressed)) {
-      // Make sure the group is back under the scene (not a controller)
-      if (windshieldGroup.parent !== scene) scene.attach(windshieldGroup);
-      windshieldGroup.position.copy(WINDSHIELD_DEFAULT_POS);
-      windshieldGroup.quaternion.copy(WINDSHIELD_DEFAULT_QUAT);
-      windshieldGroup.scale.set(1, 1, 1);
-      // Also recenter the user's stage to origin
-      camera.position.set(0, 1.6, 0);
-      camera.rotation.set(0, 0, 0);
-      _resetCooldown = 0.5;
-      console.log('[WebXR] reset windshield + camera');
-      return;
+    if (src.handedness === 'left') {
+      if (pressedOnce(src, 4)) sendControl('toggle_play', 'controller_left_x');
+      if (pressedOnce(src, 5)) sendControl('stop', 'controller_left_y');
+    } else if (src.handedness === 'right') {
+      if (pressedOnce(src, 4)) sendControl('toggle_play', 'controller_right_a');
+      if (pressedOnce(src, 5)) resetView();
     }
   }
 }
@@ -480,7 +643,9 @@ function pollXRGamepads(dtSec) {
   const session = renderer.xr.getSession();
   if (!session) return;
 
-  camera.getWorldDirection(_xrFwd);
+  const xrCamera = renderer.xr.getCamera(camera);
+  xrCamera.updateWorldMatrix(true, false);
+  xrCamera.getWorldDirection(_xrFwd);
   _xrFwd.y = 0; _xrFwd.normalize();
   _xrRight.crossVectors(_xrFwd, _xrUp).normalize();
 
@@ -492,17 +657,17 @@ function pollXRGamepads(dtSec) {
 
     if (handedness === 'left' || handedness === 'none') {
       // Walk + strafe — camera-relative
-      if (Math.abs(sy) > dz) camera.position.addScaledVector(_xrFwd, -sy * VR_WALK_SPEED * dtSec);
-      if (Math.abs(sx) > dz) camera.position.addScaledVector(_xrRight, sx * VR_WALK_SPEED * dtSec);
+      if (Math.abs(sy) > dz) playerRig.position.addScaledVector(_xrFwd, -sy * VR_WALK_SPEED * dtSec);
+      if (Math.abs(sx) > dz) playerRig.position.addScaledVector(_xrRight, sx * VR_WALK_SPEED * dtSec);
     } else if (handedness === 'right') {
       // Snap-turn (yaw) on x — comfort feature
       if (Math.abs(sx) > 0.7 && performance.now() - _lastSnapTurnTime > 300) {
         const yaw = THREE.MathUtils.degToRad(VR_SNAP_TURN_DEG) * Math.sign(sx);
-        camera.rotation.y -= yaw;
+        playerRig.rotation.y -= yaw;
         _lastSnapTurnTime = performance.now();
       }
       // Vertical move on y
-      if (Math.abs(sy) > dz) camera.position.y += -sy * VR_WALK_SPEED * dtSec;
+      if (Math.abs(sy) > dz) playerRig.position.y += -sy * VR_WALK_SPEED * dtSec;
     }
   }
 }
@@ -583,6 +748,9 @@ function enterPreview3D() {
   // Hide the floating Three.js VRButton (it's position:absolute and escapes z-index containment)
   if (vrButton) vrButton.style.visibility = 'hidden';
 
+  // Desktop preview starts from a stable view even after the participant moved in VR.
+  playerRig.position.set(0, 0, 0);
+  playerRig.rotation.set(0, 0, 0);
   camera.position.set(0.6, 1.7, 0.4);
   camera.lookAt(0, 1.6, -1.6);
 
@@ -702,13 +870,14 @@ renderer.setAnimationLoop(() => {
     applyWalkMovement();
     orbitControls.update();
   }
-  // In immersive VR, poll the controllers for thumbstick locomotion + reset button
+  // In immersive VR, poll thumbstick locomotion and controller shortcuts.
   if (renderer.xr.isPresenting) {
     const now = performance.now();
     const dt = Math.min(0.1, (now - _xrLastT) / 1000);
     _xrLastT = now;
     pollXRGamepads(dt);
-    pollResetButton(dt);
+    pollControllerButtons();
+    updateVRControlHover();
   } else {
     _xrLastT = performance.now();
   }

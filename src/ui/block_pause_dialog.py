@@ -62,7 +62,7 @@ class BlockPauseDialog(QDialog):
             heading = QLabel(f"BLOCK {completed_block} COMPLETE")
             sub = QLabel(
                 f"Just finished: {completed_condition}.\n"
-                f"Hand the participant the NASA-TLX for this block.\n\n"
+                f"NASA-TLX has been recorded for this block.\n\n"
                 f"Up next — Block {next_block}: {next_condition}."
             )
 

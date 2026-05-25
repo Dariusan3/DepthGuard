@@ -100,6 +100,7 @@
       to   { filter: brightness(1.25); }
     }
     .controls { display: flex; gap: 12px; align-items: center; }
+    .transport { margin-top: 12px; }
     button {
       flex: 1;
       padding: 14px 20px;
@@ -113,6 +114,8 @@
     }
     button:hover { filter: brightness(1.15); }
     .btn-vr { background: var(--accent); color: var(--bg); }
+    .btn-transport { background: var(--border); color: var(--text); }
+    .btn-stop { background: #2A3558; color: var(--text); }
     .btn-brake { background: var(--danger); color: white; font-size: 18px; }
     .meta {
       margin-top: 16px;
@@ -141,6 +144,10 @@
       <button id="btn-vr" class="btn-vr">ENTER VR</button>
       <button id="btn-preview3d" class="btn-vr" style="background:#1A2038;color:#E8ECF4;">PREVIEW 3D</button>
       <button id="btn-brake" class="btn-brake">BRAKE (B)</button>
+    </div>
+    <div class="controls transport">
+      <button id="btn-playback" class="btn-transport">PLAY</button>
+      <button id="btn-stop" class="btn-stop">STOP</button>
     </div>
 
     <div class="meta">
