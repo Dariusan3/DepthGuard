@@ -29,11 +29,16 @@ class PlaylistManager:
         else:
             raise ValueError("Provide csv_path or scenarios=")
 
-        # Resolve full file paths if not already set
+        # Resolve full file paths if not already set, and default the projection
+        # column for legacy CSVs that don't have one yet.
         base = Path(base_dir)
         for s in self.scenarios:
             if "full_path" not in s or not s["full_path"]:
                 s["full_path"] = str(base / s["filename"])
+            # projection: "flat" (default) or "equirectangular" (360°)
+            proj = s.get("projection")
+            if not proj or (isinstance(proj, float) and proj != proj):  # NaN check
+                s["projection"] = "flat"
 
         if shuffle:
             rng = random.Random(seed)

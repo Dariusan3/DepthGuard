@@ -65,7 +65,10 @@ class DataLogger:
     def log_reaction(self, frame_num, alert_level, trial: dict | None = None,
                      trial_start_time: float | None = None,
                      condition: str = "", response_source: str = "desktop",
-                     network_latency_ms: float = 0):
+                     network_latency_ms: float = 0,
+                     min_depth_at_press: float = -1.0,
+                     threat_box_at_press: tuple | None = None,
+                     threat_position: str = ""):
         """
         Called when user presses BRAKE.
 
@@ -127,6 +130,9 @@ class DataLogger:
                 "is_correct": is_correct,
                 "response_source": response_source,
                 "network_latency_ms": network_latency_ms,
+                "min_depth_at_press": min_depth_at_press,
+                "threat_box_at_press": str(threat_box_at_press) if threat_box_at_press else "",
+                "threat_position": threat_position,
             })
         else:
             # Free-play (single video) — old behavior
@@ -157,6 +163,9 @@ class DataLogger:
                 "is_correct": is_correct,
                 "response_source": response_source,
                 "network_latency_ms": network_latency_ms,
+                "min_depth_at_press": min_depth_at_press,
+                "threat_box_at_press": str(threat_box_at_press) if threat_box_at_press else "",
+                "threat_position": threat_position,
             })
 
         return reaction_time_ms

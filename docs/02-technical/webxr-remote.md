@@ -81,10 +81,10 @@ To bring the tunnel up:
 
 ```bash
 python main.py
-# Then toggle WebXR: OFF -> ON inside the app
+# WebXR and the ngrok tunnel start automatically after login
 ```
 
-After login, DepthGuard automatically launches `scripts/start_tunnel.sh` in the background unless a compatible ngrok tunnel is already online. The script remains available for manual troubleshooting. When the app closes, it stops only a tunnel process that it launched itself.
+After login, DepthGuard starts the local WebXR server and launches `scripts/start_tunnel.sh` in the background unless a compatible ngrok tunnel is already online. The script remains available for manual troubleshooting. When the app closes, it stops only a tunnel process that it launched itself.
 
 **Important reminders:**
 - Don't let your Mac sleep during a session (System Settings → Lock Screen → Turn display off → Never)

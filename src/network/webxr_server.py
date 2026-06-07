@@ -89,9 +89,10 @@ class WebXRServer:
         self._running = True
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
-        # Wait briefly for loop to be ready
-        for _ in range(20):
-            if self._loop is not None:
+        # Wait briefly until the HTTP socket is actually listening. Returning
+        # before this can make ngrok report ERR_NGROK_8012 during app startup.
+        for _ in range(40):
+            if self._loop is not None and self._site is not None:
                 return
             time.sleep(0.05)
 

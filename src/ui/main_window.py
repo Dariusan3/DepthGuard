@@ -317,6 +317,7 @@ class MainWindow(QMainWindow):
         self._last_webxr_push_t = 0.0  # for throttling the frame push
         self._tunnel_process = None
         self._tunnel_public_url = None
+        self._wrong_tunnel_upstream = None
         self._tunnel_probe_attempts = 0
         self._tunnel_probe_timer = QTimer(self)
         self._tunnel_probe_timer.setInterval(500)
@@ -372,7 +373,7 @@ class MainWindow(QMainWindow):
         self.setup_ui()
         self._setup_shortcuts()
         self._apply_role_visibility()
-        QTimer.singleShot(0, self._start_tunnel_if_needed)
+        QTimer.singleShot(0, self._start_webxr_stack)
 
     def _setup_shortcuts(self):
         """Keyboard shortcuts for participant-friendly use."""
@@ -997,9 +998,9 @@ class MainWindow(QMainWindow):
         table_label = self._make_section_label("TRIAL OUTCOMES")
         layout.addWidget(table_label)
 
-        self.table_logs = QTableWidget(0, 7)
+        self.table_logs = QTableWidget(0, 9)
         self.table_logs.setHorizontalHeaderLabels(
-            ["TIME", "CONDITION", "TRIAL", "EVENT", "EXPECTED", "OUTCOME", "RT (MS)"]
+            ["TIME", "SOURCE", "CONDITION", "TRIAL", "EVENT", "EXPECTED", "OUTCOME", "RT (MS)", "NET (MS)"]
         )
         self.table_logs.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_logs.verticalHeader().setVisible(False)
@@ -1360,6 +1361,10 @@ class MainWindow(QMainWindow):
         self.ar_mode_enabled = self.condition_flags.ar_overlay_enabled
         self._refresh_condition_buttons()
 
+        # Swap the audio palette to match the experimental condition so
+        # STANDARD vs AR_HUD feels acoustically different to the participant
+        self.audio_system.set_condition(condition.value)
+
         # Stop audio immediately if condition disables it (otherwise loop continues briefly)
         if not self.condition_flags.audio_enabled:
             self.audio_system.set_alert_level("SAFE")
@@ -1575,6 +1580,11 @@ class MainWindow(QMainWindow):
                 self.stop_video()
                 return
 
+        # If this trial is a 360° equirectangular clip, crop to the forward view
+        # so the depth model + alert ROI work on a normal-looking rectangle.
+        if self.current_trial and self.current_trial.get("projection") == "equirectangular":
+            frame = self._crop_equirectangular_forward(frame)
+
         self.current_frame = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
         if not update_progress_only:
             self.slider_progress.setValue(self.current_frame)
@@ -1732,9 +1742,18 @@ class MainWindow(QMainWindow):
 
         candidates = []
         frame_cx = w / 2.0
+        # Don't surface threats that are too small relative to the frame —
+        # those are far-away objects the driver doesn't need to react to yet.
+        # 0.5% of the frame area = ~3000 px on a 720p image, roughly a
+        # pedestrian-sized blob at moderate distance.
+        MIN_AREA_FRAC = 0.005
+        frame_area = w * h
         for c in contours:
             area = cv2.contourArea(c)
             if area < 250:
+                continue
+            if area / frame_area < MIN_AREA_FRAC:
+                # Too small on screen → too far away to alert on
                 continue
             bx, by, bw, bh = cv2.boundingRect(c)
 
@@ -1842,7 +1861,7 @@ class MainWindow(QMainWindow):
 
         for det in detections:
             x1, y1, x2, y2 = det.bbox
-            color = self._object_box_color(det.label)
+            color = self._object_box_color(det.label, det.depth)
             is_primary = primary_box is not None and self._box_iou((x1, y1, x2, y2), primary_box) > 0.50
             thickness = 3 if is_primary else (1 if subtle else 2)
             cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
@@ -1894,7 +1913,14 @@ class MainWindow(QMainWindow):
         return image
 
     @staticmethod
-    def _object_box_color(label):
+    def _object_box_color(label, depth=None):
+        if isinstance(depth, (int, float)):
+            if depth <= 0.25:
+                return (85, 45, 255)   # close: red
+            if depth <= 0.40:
+                return (10, 159, 255)  # approaching: orange
+            if depth <= 0.60:
+                return (10, 214, 255)  # caution: yellow
         colors = {
             "person": (85, 45, 255),
             "bicycle": (10, 159, 255),
@@ -1935,8 +1961,127 @@ class MainWindow(QMainWindow):
         elif self.condition_flags.threat_box_visible:
             self._draw_detector_status(disp_frame, detections)
 
+        # ── Peripheral edge glow + dashboard icon ──
+        # Non-AR conditions get a real-car-style warning panel and edge cue.
+        # Together these give STANDARD a clear visual signal without revealing
+        # the depth model's reasoning (no bounding box on the windshield).
+        if not self.condition_flags.ar_overlay_enabled and \
+           self.condition_flags.alert_bar_visible:
+            self._draw_peripheral_glow(disp_frame, threat_box, alert_res)
+            self._draw_dashboard_icon(disp_frame, alert_res)
+
         w1, h1 = self.lbl_driver_view.width(), self.lbl_driver_view.height()
         self.lbl_driver_view.setPixmap(self._cv2_to_qpixmap(disp_frame, w1, h1))
+
+    def _draw_dashboard_icon(self, frame, alert_res):
+        """
+        Bottom-center dashboard-style warning icon — pulses when there's a
+        non-SAFE alert. Inspired by car instrument-cluster warning lights.
+        Visual cue for the STANDARD condition that doesn't require a
+        bounding box around the threat.
+        """
+        level = alert_res.get("level", "SAFE")
+        if level == "SAFE":
+            return
+
+        h, w = frame.shape[:2]
+        style = self.ALERT_STYLES.get(level, self.ALERT_STYLES["SAFE"])
+        bgr = tuple(int(style["bg"].lstrip('#')[i:i+2], 16) for i in (4, 2, 0))
+
+        # Pulse for CRITICAL — alternates intensity on a ~5 Hz beat
+        flash_on = (int(time.time() * 5) % 2 == 0)
+        intensity = 1.0 if (level != "CRITICAL" or flash_on) else 0.55
+
+        cx, cy = w // 2, int(h * 0.93)
+        size = max(28, h // 18)
+
+        # Background plate (dark rounded panel)
+        plate_w, plate_h = size * 4, int(size * 1.4)
+        x1, y1 = cx - plate_w // 2, cy - plate_h // 2
+        x2, y2 = x1 + plate_w, y1 + plate_h
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), (12, 16, 33), -1)
+        cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, dst=frame)
+        cv2.rectangle(frame, (x1, y1), (x2, y2),
+                      tuple(int(c * intensity) for c in bgr), 2)
+
+        # Stylized "car + radar arc" glyph
+        scaled = tuple(int(c * intensity) for c in bgr)
+        car_x, car_y = cx - int(size * 0.9), cy
+        cv2.rectangle(frame, (car_x, car_y - size // 4),
+                      (car_x + int(size * 0.7), car_y + size // 4),
+                      scaled, -1)
+        # arc represents detection beam
+        cv2.ellipse(frame, (cx + int(size * 0.4), cy), (size, size // 2),
+                    0, -50, 50, scaled, 2)
+        cv2.ellipse(frame, (cx + int(size * 0.4), cy),
+                    (int(size * 1.4), int(size * 0.7)),
+                    0, -50, 50, scaled, 2)
+
+        # Level abbreviation to the right
+        text = level[0]  # C, W, A, S
+        cv2.putText(frame, text, (cx + int(size * 1.4), cy + size // 3),
+                    cv2.FONT_HERSHEY_SIMPLEX, size / 28.0, scaled,
+                    max(2, size // 12), cv2.LINE_AA)
+
+    def _draw_peripheral_glow(self, frame, threat_box, alert_res):
+        """
+        Subtle vertical edge glow when the threat is on the left or right
+        third of the frame — no bounding box drawn over the scene, just a
+        colored hint in the participant's peripheral vision.
+        """
+        level = alert_res.get("level", "SAFE")
+        if level == "SAFE" or threat_box is None:
+            return
+
+        h, w = frame.shape[:2]
+        tx1, _, tx2, _ = threat_box
+        cx = (tx1 + tx2) / 2
+
+        side = None
+        if cx < w * 0.33:
+            side = "left"
+        elif cx > w * 0.67:
+            side = "right"
+        if side is None:
+            return  # centered — the alert bar / audio handle this
+
+        style = self.ALERT_STYLES.get(level, self.ALERT_STYLES["SAFE"])
+        bg_hex = style["bg"]
+        bgr_color = tuple(int(bg_hex.lstrip('#')[i:i+2], 16) for i in (4, 2, 0))
+
+        strip_w = max(20, w // 30)
+        alpha = 0.35 if level == "CRITICAL" else 0.22
+
+        overlay = frame.copy()
+        if side == "left":
+            cv2.rectangle(overlay, (0, 0), (strip_w, h), bgr_color, -1)
+        else:
+            cv2.rectangle(overlay, (w - strip_w, 0), (w, h), bgr_color, -1)
+        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, dst=frame)
+
+    def _crop_equirectangular_forward(self, frame, fov_deg=90):
+        """
+        Take a 360° equirectangular frame and crop out the forward-facing
+        perspective view at the given horizontal field of view.
+
+        For now this is a simple center crop — a full reprojection would
+        require remapping every pixel through a pinhole camera model. The
+        forward 90° of an equirectangular video is roughly the center 25%
+        horizontally (90° / 360° = 0.25), centered on the front-facing pixel.
+        """
+        h, w = frame.shape[:2]
+        crop_frac = fov_deg / 360.0
+        crop_w = int(w * crop_frac)
+        cx = w // 2
+        x1 = max(0, cx - crop_w // 2)
+        x2 = min(w, x1 + crop_w)
+        # Keep a 16:9 vertical slice from the equator (middle of the frame)
+        target_h = int(crop_w * 9 / 16)
+        cy = h // 2
+        y1 = max(0, cy - target_h // 2)
+        y2 = min(h, y1 + target_h)
+        return frame[y1:y2, x1:x2].copy()
 
     def _cv2_to_qpixmap(self, cv_img, w, h):
         rgb_image = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
@@ -2111,19 +2256,25 @@ class MainWindow(QMainWindow):
             timestamp = row_data.get("timestamp", 0)
             ts = time.strftime("%H:%M:%S", time.localtime(timestamp)) if timestamp else ""
             outcome = row_data.get("outcome", "").upper()
+            source = self._format_response_source(row_data.get("response_source", ""))
             values = [
                 ts,
+                source,
                 row_data.get("condition", ""),
                 str(row_data.get("trial_id", "")),
                 row_data.get("event_type", ""),
                 row_data.get("expected_level", ""),
                 outcome,
                 str(row_data.get("reaction_time_ms", "")),
+                str(row_data.get("network_latency_ms", "")),
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setTextAlignment(Qt.AlignCenter)
-                if col == 5:
+                if col == 1 and value:
+                    source_color = C_ACCENT if value != "DESKTOP" else C_TEXT
+                    item.setForeground(QColor(source_color))
+                elif col == 6:
                     outcome_colors = {
                         "HIT": C_SAFE,
                         "FALSE_ALARM": C_DANGER,
@@ -2135,6 +2286,22 @@ class MainWindow(QMainWindow):
                     item.setForeground(QColor(outcome_colors.get(outcome, C_TEXT)))
                 self.table_logs.setItem(row, col, item)
         self.table_logs.scrollToBottom()
+
+    @staticmethod
+    def _format_response_source(source: str) -> str:
+        if not source:
+            return ""
+        labels = {
+            "desktop": "DESKTOP",
+            "click": "WEB BUTTON",
+            "keyboard": "KEYBOARD",
+            "keyboard_back": "BACK KEY",
+            "controller": "VR TRIGGER",
+            "controller_panel": "VR PANEL",
+            "controller_left_y": "VR Y",
+            "controller_back_button": "VR BACK",
+        }
+        return labels.get(source, source.replace("_", " ").upper())
 
     def start_session(self):
         """Start a structured HCI session with Latin-square block ordering."""
@@ -2302,12 +2469,23 @@ class MainWindow(QMainWindow):
         event.accept()
 
     # ── WebXR companion ──────────────────────────────────────────
+    def _start_webxr_stack(self):
+        """Bring up the local WebXR server first, then expose it through ngrok."""
+        self._start_webxr_server(show_dialog=False)
+        self._start_tunnel_if_needed()
+
     def _start_tunnel_if_needed(self):
         """Start the static ngrok tunnel unless an existing process already serves WebXR."""
         existing_url = self._find_running_tunnel()
+        if self._wrong_tunnel_upstream:
+            self._show_tunnel_status(
+                "TUNNEL USES LOCALHOST - stop old ngrok and restart the app"
+            )
+            return
         if existing_url:
             self._tunnel_public_url = existing_url
-            self._show_tunnel_status("TUNNEL ONLINE", existing_url)
+            status = "WEBXR READY" if self.webxr_server is not None and self.webxr_server.is_running() else "TUNNEL ONLINE"
+            self._show_tunnel_status(status, existing_url)
             return
 
         script_path = Path(__file__).resolve().parent.parent.parent / "scripts" / "start_tunnel.sh"
@@ -2328,6 +2506,7 @@ class MainWindow(QMainWindow):
 
     def _find_running_tunnel(self):
         """Return an ngrok public URL already forwarding to the WebXR endpoint."""
+        self._wrong_tunnel_upstream = None
         try:
             with urlopen(NGROK_API_URL, timeout=0.25) as response:
                 payload = json.loads(response.read().decode("utf-8"))
@@ -2338,9 +2517,12 @@ class MainWindow(QMainWindow):
             public_url = str(tunnel.get("public_url", ""))
             config = tunnel.get("config") or {}
             addr = str(config.get("addr", ""))
-            if WEBXR_PUBLIC_URL.rstrip("/") in public_url:
+            if "localhost:8765" in addr:
+                self._wrong_tunnel_upstream = addr
+                continue
+            if WEBXR_PUBLIC_URL.rstrip("/") in public_url and "127.0.0.1:8765" in addr:
                 return public_url.rstrip("/") + "/"
-            if addr.endswith(":8765") and public_url.startswith("https://"):
+            if "127.0.0.1:8765" in addr and public_url.startswith("https://"):
                 return public_url.rstrip("/") + "/"
         return None
 
@@ -2350,7 +2532,8 @@ class MainWindow(QMainWindow):
         if public_url:
             self._tunnel_public_url = public_url
             self._tunnel_probe_timer.stop()
-            self._show_tunnel_status("TUNNEL ONLINE", public_url)
+            status = "WEBXR READY" if self.webxr_server is not None and self.webxr_server.is_running() else "TUNNEL ONLINE"
+            self._show_tunnel_status(status, public_url)
             return
 
         self._tunnel_probe_attempts += 1
@@ -2385,40 +2568,48 @@ class MainWindow(QMainWindow):
             self.lbl_webxr_url.setToolTip("")
         self.lbl_webxr_url.show()
 
-    def toggle_webxr_server(self):
-        """Start or stop the WebXR companion server."""
-        if self.webxr_server is None or not self.webxr_server.is_running():
-            try:
-                from src.network.webxr_server import WebXRServer
-            except ImportError as e:
+    def _start_webxr_server(self, show_dialog=True):
+        """Start the local WebXR HTTP/WebSocket server."""
+        if self.webxr_server is not None and self.webxr_server.is_running():
+            return True
+
+        try:
+            from src.network.webxr_server import WebXRServer
+        except ImportError:
+            self.btn_webxr.setChecked(False)
+            if show_dialog:
                 QMessageBox.critical(
-                    self, "WebXR — Missing Dependencies",
+                    self, "WebXR - Missing Dependencies",
                     "The WebXR server needs aiohttp + websockets.\n\n"
                     "Install with:\n  pip install aiohttp websockets"
                 )
-                self.btn_webxr.setChecked(False)
-                return
+            else:
+                self._show_tunnel_status("WEBXR NOT STARTED - missing aiohttp/websockets")
+            return False
 
-            self.webxr_server = WebXRServer(
-                on_brake=self._handle_remote_brake,
-                on_control=self._handle_remote_control,
-            )
-            try:
-                self.webxr_server.start()
-            except Exception as e:
-                QMessageBox.critical(self, "WebXR — Server Error", str(e))
-                self.btn_webxr.setChecked(False)
-                self.webxr_server = None
-                return
+        self.webxr_server = WebXRServer(
+            on_brake=self._handle_remote_brake,
+            on_control=self._handle_remote_control,
+        )
+        try:
+            self.webxr_server.start()
+        except Exception as e:
+            self.btn_webxr.setChecked(False)
+            self.webxr_server = None
+            if show_dialog:
+                QMessageBox.critical(self, "WebXR - Server Error", str(e))
+            else:
+                self._show_tunnel_status(f"WEBXR NOT STARTED - {e}")
+            return False
 
-            local_url = self.webxr_server.public_url_hint()
-            url = self._tunnel_public_url or local_url
-            port = self.webxr_server.port
-            self.btn_webxr.setText("  📡  WebXR: ON")
+        local_url = self.webxr_server.public_url_hint()
+        url = self._tunnel_public_url or local_url
+        port = self.webxr_server.port
+        self.btn_webxr.setChecked(True)
+        self.btn_webxr.setText("  📡  WebXR: ON")
+        self._show_tunnel_status("WEBXR READY", url)
 
-            # Persistent clickable URL in the session row
-            self._show_tunnel_status("WEBXR READY", url)
-
+        if show_dialog:
             import webbrowser
             msg = QMessageBox(self)
             msg.setWindowTitle("WebXR Server Started")
@@ -2439,6 +2630,13 @@ class MainWindow(QMainWindow):
             msg.exec_()
             if msg.clickedButton() is btn_open:
                 webbrowser.open(url)
+
+        return True
+
+    def toggle_webxr_server(self):
+        """Start or stop the WebXR companion server."""
+        if self.webxr_server is None or not self.webxr_server.is_running():
+            self._start_webxr_server(show_dialog=True)
         else:
             try:
                 self.webxr_server.stop()

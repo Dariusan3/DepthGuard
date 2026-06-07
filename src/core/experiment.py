@@ -42,7 +42,10 @@ def flags_for(condition: ExperimentCondition) -> ConditionFlags:
         return ConditionFlags(
             audio_enabled=True,
             alert_bar_visible=True,
-            threat_box_visible=True,
+            # Hide the literal threat rectangle on the participant's driver view —
+            # the alert bar color + audio is the cue. More realistic than a box on
+            # the windshield. The depth panel still shows the box for the researcher.
+            threat_box_visible=False,
             ar_overlay_enabled=False,
         )
     if condition == ExperimentCondition.AR_HUD:

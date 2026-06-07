@@ -184,6 +184,16 @@ const objectColors = {
   'stop sign': '#FF2D55',
 };
 
+function objectColor(obj) {
+  const depth = Number(obj.depth);
+  if (Number.isFinite(depth)) {
+    if (depth <= 0.25) return '#FF2D55';
+    if (depth <= 0.40) return '#FF9F0A';
+    if (depth <= 0.60) return '#FFD60A';
+  }
+  return objectColors[obj.label] || '#E8ECF4';
+}
+
 function drawFrameWithObjects(ctx, canvas) {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -211,7 +221,7 @@ function drawObjectBoxes(ctx, objects, dx, dy, scale) {
     const py = dy + y1 * scale;
     const pw = Math.max(1, (x2 - x1) * scale);
     const ph = Math.max(1, (y2 - y1) * scale);
-    const color = objectColors[obj.label] || '#E8ECF4';
+    const color = objectColor(obj);
     ctx.strokeStyle = color;
     ctx.lineWidth = Math.max(2, 3 * scale);
     ctx.strokeRect(px, py, pw, ph);
@@ -282,9 +292,9 @@ btnBrake.addEventListener('click', () => sendBrake('click'));
 btnPlayback.addEventListener('click', () => sendControl('toggle_play', 'web'));
 btnStop.addEventListener('click', () => sendControl('stop', 'web'));
 window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' || e.code === 'KeyB') {
+  if (e.code === 'Space' || e.code === 'KeyB' || e.code === 'Backspace') {
     e.preventDefault();
-    sendBrake('keyboard');
+    sendBrake(e.code === 'Backspace' ? 'keyboard_back' : 'keyboard');
   }
 });
 
@@ -582,6 +592,8 @@ setupController(0);
 setupController(1);
 
 const controllerButtonState = new Map();
+const CONTROLLER_BACK_BUTTON_INDEXES = [8];
+const LEFT_BRAKE_BUTTON_INDEXES = [4, 5];
 
 function pressedOnce(source, index) {
   const key = `${source.handedness}:${index}`;
@@ -606,9 +618,15 @@ function pollControllerButtons() {
   if (!session) return;
   for (const src of session.inputSources) {
     if (!src.gamepad) continue;
+    if (CONTROLLER_BACK_BUTTON_INDEXES.some(index => pressedOnce(src, index))) {
+      sendBrake('controller_back_button');
+    }
     if (src.handedness === 'left') {
-      if (pressedOnce(src, 4)) sendControl('toggle_play', 'controller_left_x');
-      if (pressedOnce(src, 5)) sendControl('stop', 'controller_left_y');
+      // Quest Browser button indexes vary between builds, so both left face
+      // buttons are treated as brake. Pause remains on right A and the VR panel.
+      if (LEFT_BRAKE_BUTTON_INDEXES.some(index => pressedOnce(src, index))) {
+        sendBrake('controller_left_y');
+      }
     } else if (src.handedness === 'right') {
       if (pressedOnce(src, 4)) sendControl('toggle_play', 'controller_right_a');
       if (pressedOnce(src, 5)) resetView();
