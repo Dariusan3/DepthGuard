@@ -1,6 +1,2 @@
 id,filename,event_type,expected_alert_level,event_start_ms,duration_ms,source,license,notes,projection
-360_01,360_01_pedestrian_critical.mp4,pedestrian,CRITICAL,3000,8000,REPLACE_WITH_YOUR_URL@MM:SS,fair-use,Placeholder — replace with real 360° dashcam clip,equirectangular
-360_02,360_02_pedestrian_warning.mp4,pedestrian,WARNING,3500,8000,REPLACE_WITH_YOUR_URL@MM:SS,fair-use,Placeholder,equirectangular
-360_03,360_03_brake_lights_critical.mp4,brake_lights,CRITICAL,2500,7000,REPLACE_WITH_YOUR_URL@MM:SS,fair-use,Placeholder,equirectangular
-360_04,360_04_brake_lights_warning.mp4,brake_lights,WARNING,3000,8000,REPLACE_WITH_YOUR_URL@MM:SS,fair-use,Placeholder,equirectangular
-360_05,360_05_city_safe.mp4,safe,SAFE,0,10000,REPLACE_WITH_YOUR_URL@MM:SS,fair-use,Placeholder — no event,equirectangular
+360_demo,01_pedestrian_critical.mp4,pedestrian,CRITICAL,1500,7000,REUSES_FLAT_CLIP,fair-use,Demo row: reuses an existing flat clip with projection=equirectangular so the crop pipeline runs. Replace with a real 360 dashcam clip to see a proper forward-view crop.,equirectangular
