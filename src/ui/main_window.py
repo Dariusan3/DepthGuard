@@ -1610,9 +1610,23 @@ class MainWindow(QMainWindow):
                     trial_id=self.current_trial.get("id", "") if self.current_trial else "",
                 )
 
-            # Audio gated by current condition (NO_ALERT condition silences it)
+            # Audio gated by current condition (NO_ALERT silences it).
+            # Audio also requires a real, sizable threat detected on screen —
+            # see AUDIO_THREAT_AREA_FRAC in audio_alerts.py. This prevents the
+            # constant beeping that happens when only depth (per-frame normalized)
+            # is used as the trigger. Visual cues stay on WARNING/CAUTION.
             if self.condition_flags.audio_enabled:
-                self.audio_system.set_alert_level(alert_res["level"])
+                threat_frac = 0.0
+                if self._smoothed_threat_box is not None:
+                    tx1, ty1, tx2, ty2 = self._smoothed_threat_box
+                    fh, fw = frame.shape[:2]
+                    if fw > 0 and fh > 0:
+                        threat_frac = max(0, (tx2 - tx1)) * max(0, (ty2 - ty1)) / (fw * fh)
+                self.audio_system.set_alert_level(
+                    alert_res["level"],
+                    min_depth=float(alert_res.get("min_depth", -1.0)),
+                    threat_area_frac=threat_frac,
+                )
             else:
                 self.audio_system.set_alert_level("SAFE")
             self.update_video_panels(frame, raw_depth, alert_res, detections)

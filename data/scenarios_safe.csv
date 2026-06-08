@@ -1,0 +1,4 @@
+id,filename,event_type,expected_alert_level,event_start_ms,duration_ms,source,license,notes,projection
+14,14_city_safe.mp4,safe,SAFE,0,10000,https://www.youtube.com/watch?v=Q84JXbuD3Is@0:35,fair-use,,flat
+15,15_city_safe.mp4,safe,SAFE,0,10000,https://www.youtube.com/watch?v=Q84JXbuD3Is@2:35,fair-use,,flat
+16,16_residential_safe.mp4,safe,SAFE,0,10000,https://www.youtube.com/watch?v=Q84JXbuD3Is@9:40,fair-use,,flat

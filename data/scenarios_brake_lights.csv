@@ -1,17 +1,9 @@
 id,filename,event_type,expected_alert_level,event_start_ms,duration_ms,source,license,notes,projection
-01,01_pedestrian_critical.mp4,pedestrian,CRITICAL,1500,7000,https://www.youtube.com/watch?v=dR2h8xD6dPI@0:07,fair-use,,flat
-02,02_pedestrian_critical.mp4,pedestrian,CRITICAL,1500,9000,https://www.youtube.com/watch?v=dR2h8xD6dPI@3:30,fair-use,,flat
-03,03_pedestrian_critical.mp4,pedestrian,CRITICAL,1500,7000,https://www.youtube.com/watch?v=dR2h8xD6dPI@4:30,fair-use,,flat
 04,04_brake_lights_critical.mp4,brake_lights,CRITICAL,1500,8000,https://www.youtube.com/watch?v=dR2h8xD6dPI@6:13,fair-use,,flat
-05,05_pedestrian_warning.mp4,pedestrian,WARNING,2000,6000,https://www.youtube.com/watch?v=dR2h8xD6dPI@9:42,fair-use,,flat
 06,06_brake_lights_warning.mp4,brake_lights,WARNING,2000,6000,https://www.youtube.com/watch?v=EqiHzik7-fY@0:23,fair-use,,flat
 07,07_brake_lights_warning.mp4,brake_lights,WARNING,1500,5000,https://www.youtube.com/watch?v=EqiHzik7-fY@1:30,fair-use,,flat
 08,08_brake_lights_warning.mp4,brake_lights,WARNING,1500,5000,https://www.youtube.com/watch?v=EqiHzik7-fY@3:05,fair-use,,flat
 09,09_brake_lights_warning.mp4,brake_lights,WARNING,1500,5000,https://www.youtube.com/watch?v=EqiHzik7-fY@3:34,fair-use,,flat
-10,10_pedestrian_warning.mp4,pedestrian,WARNING,2000,5000,https://www.youtube.com/watch?v=EqiHzik7-fY@3:47,fair-use,,flat
 11,11_brake_lights_critical.mp4,brake_lights,CRITICAL,1500,5000,https://www.youtube.com/watch?v=MKPkT2TuZhs@0:20,fair-use,,flat
 12,12_brake_lights_critical.mp4,brake_lights,CRITICAL,2000,8000,https://www.youtube.com/watch?v=MKPkT2TuZhs@1:06,fair-use,,flat
 13,13_brake_lights_critical.mp4,brake_lights,CRITICAL,1500,7000,https://www.youtube.com/watch?v=MKPkT2TuZhs@3:26,fair-use,,flat
-14,14_city_safe.mp4,safe,SAFE,0,10000,https://www.youtube.com/watch?v=Q84JXbuD3Is@0:35,fair-use,,flat
-15,15_city_safe.mp4,safe,SAFE,0,10000,https://www.youtube.com/watch?v=Q84JXbuD3Is@2:35,fair-use,,flat
-16,16_residential_safe.mp4,safe,SAFE,0,10000,https://www.youtube.com/watch?v=Q84JXbuD3Is@9:40,fair-use,,flat

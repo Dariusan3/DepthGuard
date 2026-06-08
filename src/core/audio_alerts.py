@@ -96,24 +96,57 @@ class AudioAlertSystem:
             
         return pygame.sndarray.make_sound(audio)
 
-    def set_alert_level(self, level):
+    # Minimum on-screen footprint for the threat to count as "really close".
+    # A pedestrian/vehicle that's super close fills a noticeable fraction of
+    # the frame; far-away ones don't. This sidesteps the per-frame-normalized
+    # depth issue (MiDaS reports relative not absolute distance).
+    AUDIO_THREAT_AREA_FRAC = 0.025   # ≈ 2.5% of frame area
+
+    def set_alert_level(self, level, min_depth: float = -1.0,
+                        threat_area_frac: float = 0.0):
+        """
+        level: SAFE / CAUTION / WARNING / CRITICAL (drives visual alerts).
+        threat_area_frac: 0..1, fraction of the frame occupied by the closest
+                          detected object. Audio fires only when this exceeds
+                          AUDIO_THREAT_AREA_FRAC — proxy for "object is super
+                          close in the real world", not just relatively close.
+        min_depth: kept for backwards-compat but no longer used to gate audio.
+        """
         self.current_level = level
+        self.current_threat_area_frac = float(threat_area_frac)
+        self.current_min_depth = float(min_depth)
 
     def set_condition(self, condition_name: str):
         """Switch the active sound palette to match the experimental condition."""
         if condition_name in self.sounds:
             self.current_condition = condition_name
 
+    def _should_play(self):
+        """
+        Audio fires only when BOTH:
+        1. The alert system rated this CRITICAL
+        2. A real threat object was detected on-screen (size > threshold)
+
+        Without #2 we'd fire constantly because MiDaS depth is per-frame
+        normalized — there's always something "closest" in the ROI even when
+        the road ahead is clear.
+        """
+        area = getattr(self, "current_threat_area_frac", 0.0)
+        if area < self.AUDIO_THREAT_AREA_FRAC:
+            return None    # nothing big enough to be a real, close threat
+        if self.current_level == "CRITICAL":
+            return "CRITICAL"
+        # WARNING audio disabled by default — visual cues already cover it
+        return None
+
     def _sound_loop(self):
-        """Background loop to play sounds based on current alert level"""
+        """Background loop — fires beeps only when a real, close threat exists."""
         while self.running:
             palette = self.sounds.get(self.current_condition, self.sounds["STANDARD"])
-            if self.current_level == "CRITICAL" and not pygame.mixer.get_busy():
+            kind = self._should_play()
+            if kind == "CRITICAL" and not pygame.mixer.get_busy():
                 palette["CRITICAL"].play()
                 time.sleep(0.4)
-            elif self.current_level == "WARNING" and not pygame.mixer.get_busy():
-                palette["WARNING"].play()
-                time.sleep(1.0)
             else:
                 time.sleep(0.1)
                 
