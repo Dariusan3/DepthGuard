@@ -31,6 +31,7 @@ let latestFrame = null;     // {imageBitmap, alert, trial}
 let latencyPing = 0;        // last measured RTT in ms
 let latestObjects = [];
 let vrPlayButton = null;
+let vrBrakeButton = null;
 
 function connect() {
   setConn(false, 'CONNECTING…');
@@ -271,9 +272,10 @@ function sendBrake(source) {
     t_client: performance.now(),
     latency_hint_ms: latencyPing,
   }));
-  // Visual flash
+  // Visual flash — both the 2D page button and the in-world VR panel button
   btnBrake.style.filter = 'brightness(1.5)';
   setTimeout(() => btnBrake.style.filter = '', 150);
+  flashVRBrakeButton();
 }
 
 function sendControl(action, source, extra = {}) {
@@ -396,18 +398,35 @@ function updateVRControlButton(button, label = button.userData.label, hovered = 
   button.userData.hovered = hovered;
   const ctx = button.userData.ctx;
   const canvas = button.userData.canvas;
+  const flashing = !!button.userData.flashing;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = hovered ? button.userData.hoverColor : button.userData.color;
+  // Flashing (just pressed) renders brightest, then hover, then base color
+  ctx.fillStyle = flashing ? '#FFFFFF' : (hovered ? button.userData.hoverColor : button.userData.color);
   ctx.fillRect(4, 4, canvas.width - 8, canvas.height - 8);
-  ctx.strokeStyle = hovered ? '#FFFFFF' : '#24304D';
-  ctx.lineWidth = hovered ? 5 : 3;
+  ctx.strokeStyle = (flashing || hovered) ? '#FFFFFF' : '#24304D';
+  ctx.lineWidth = (flashing || hovered) ? 5 : 3;
   ctx.strokeRect(4, 4, canvas.width - 8, canvas.height - 8);
-  ctx.fillStyle = '#FFFFFF';
+  ctx.fillStyle = flashing ? button.userData.color : '#FFFFFF';
   ctx.font = '700 34px sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(label, canvas.width / 2, canvas.height / 2);
   button.userData.texture.needsUpdate = true;
+}
+
+// Press animation for the in-world BRAKE button — fires no matter where the
+// brake came from (trigger, left X/Y, keyboard, 2D click, or the panel itself)
+// so the participant always gets the visual confirmation in VR.
+function flashVRBrakeButton() {
+  if (!vrBrakeButton) return;
+  vrBrakeButton.userData.flashing = true;
+  vrBrakeButton.scale.set(0.86, 0.86, 1);   // press-down effect
+  updateVRControlButton(vrBrakeButton);
+  setTimeout(() => {
+    vrBrakeButton.userData.flashing = false;
+    vrBrakeButton.scale.set(1, 1, 1);
+    updateVRControlButton(vrBrakeButton);
+  }, 220);
 }
 
 function makeVRControlButton(label, action, color, hoverColor, x, y) {
@@ -434,7 +453,7 @@ function makeVRControlButton(label, action, color, hoverColor, x, y) {
 vrPlayButton = makeVRControlButton('PLAY', 'toggle_play', '#007E63', '#00B887', -0.78, 0.12);
 makeVRControlButton('BACK 5S', 'seek_back', '#273451', '#3A4D75', 0, 0.12);
 makeVRControlButton('FWD 5S', 'seek_forward', '#273451', '#3A4D75', 0.78, 0.12);
-makeVRControlButton('BRAKE', 'brake', '#C91F42', '#FF2D55', -0.78, -0.12);
+vrBrakeButton = makeVRControlButton('BRAKE', 'brake', '#C91F42', '#FF2D55', -0.78, -0.12);
 makeVRControlButton('STOP', 'stop', '#273451', '#495D87', 0, -0.12);
 makeVRControlButton('RESET', 'reset', '#273451', '#495D87', 0.78, -0.12);
 

@@ -374,6 +374,13 @@ class MainWindow(QMainWindow):
         self._setup_shortcuts()
         self._apply_role_visibility()
         QTimer.singleShot(0, self._start_webxr_stack)
+        # Show the role-specific quick-start guide once, after the window paints
+        QTimer.singleShot(400, self.show_guide)
+
+    def show_guide(self):
+        """Role-specific quick-start guide (also on the header '? GUIDE' button)."""
+        from src.ui.help_dialog import HelpDialog
+        HelpDialog(is_admin=self.user.is_admin, parent=self).exec_()
 
     def _setup_shortcuts(self):
         """Keyboard shortcuts for participant-friendly use."""
@@ -545,6 +552,18 @@ class MainWindow(QMainWindow):
             f" border-radius: 14px; padding: 4px 12px; font-size: 11px;"
         )
 
+        self.btn_guide = QPushButton("?  GUIDE")
+        self.btn_guide.setCursor(Qt.PointingHandCursor)
+        self.btn_guide.setFocusPolicy(Qt.NoFocus)
+        self.btn_guide.clicked.connect(self.show_guide)
+        self.btn_guide.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {C_ACCENT};"
+            f" border: 1px solid {C_ACCENT}40; border-radius: 14px;"
+            f" padding: 4px 12px; font-size: 10px; font-weight: 700;"
+            f" letter-spacing: 1.5px; }}"
+            f"QPushButton:hover {{ border-color: {C_ACCENT}; background: {C_ACCENT}15; }}"
+        )
+
         self.btn_logout = QPushButton("LOG OUT")
         self.btn_logout.setCursor(Qt.PointingHandCursor)
         self.btn_logout.setFocusPolicy(Qt.NoFocus)
@@ -563,6 +582,8 @@ class MainWindow(QMainWindow):
         h_lay.addStretch()
         h_lay.addWidget(self.lbl_current_fps)
         h_lay.addSpacing(16)
+        h_lay.addWidget(self.btn_guide)
+        h_lay.addSpacing(6)
         h_lay.addWidget(self.lbl_user_pill)
         h_lay.addSpacing(6)
         h_lay.addWidget(self.btn_logout)
@@ -827,6 +848,18 @@ class MainWindow(QMainWindow):
         self.btn_load_playlist = QPushButton("  📋  Load Playlist")
         self.btn_load_playlist.setObjectName("AccentBtn")
         self.btn_load_playlist.clicked.connect(self.load_playlist)
+        self.btn_load_playlist.setToolTip(
+            "<b>Load a scenario CSV from data/:</b><br>"
+            "• scenarios.csv — all 16 clips<br>"
+            "• scenarios_pedestrian / _brake_lights / _safe.csv — one event type<br>"
+            "• scenarios_360.csv — 360° clips (forward view auto-cropped)<br><br>"
+            "<b>Add your own test file:</b><br>"
+            "1. Put the mp4 in data/scenarios/<br>"
+            "2. Add a CSV row: id, filename, event_type, expected_alert_level,<br>"
+            "&nbsp;&nbsp;&nbsp;&nbsp;event_start_ms (when the hazard appears), duration_ms,<br>"
+            "&nbsp;&nbsp;&nbsp;&nbsp;source, license, notes, projection (flat | equirectangular)<br>"
+            "3. Load that CSV here"
+        )
 
         self.btn_save_session = QPushButton("  Save Session")
         self.btn_save_session.clicked.connect(self.save_session)
@@ -2074,28 +2107,37 @@ class MainWindow(QMainWindow):
             cv2.rectangle(overlay, (w - strip_w, 0), (w, h), bgr_color, -1)
         cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, dst=frame)
 
-    def _crop_equirectangular_forward(self, frame, fov_deg=90):
+    def _crop_equirectangular_forward(self, frame, fov_deg=100,
+                                      out_w=960, out_h=540):
         """
-        Take a 360° equirectangular frame and crop out the forward-facing
-        perspective view at the given horizontal field of view.
+        Reproject a 360° equirectangular frame to a forward-facing pinhole
+        (gnomonic) view. Unlike a flat crop, this keeps straight lines straight
+        — the result looks like a normal dashcam shot.
 
-        For now this is a simple center crop — a full reprojection would
-        require remapping every pixel through a pinhole camera model. The
-        forward 90° of an equirectangular video is roughly the center 25%
-        horizontally (90° / 360° = 0.25), centered on the front-facing pixel.
+        The remap grids are cached per (input shape, params) so the per-frame
+        cost is a single cv2.remap call (~1-2 ms at 960x540).
         """
         h, w = frame.shape[:2]
-        crop_frac = fov_deg / 360.0
-        crop_w = int(w * crop_frac)
-        cx = w // 2
-        x1 = max(0, cx - crop_w // 2)
-        x2 = min(w, x1 + crop_w)
-        # Keep a 16:9 vertical slice from the equator (middle of the frame)
-        target_h = int(crop_w * 9 / 16)
-        cy = h // 2
-        y1 = max(0, cy - target_h // 2)
-        y2 = min(h, y1 + target_h)
-        return frame[y1:y2, x1:x2].copy()
+        cache_key = (h, w, fov_deg, out_w, out_h)
+        if getattr(self, "_equirect_cache_key", None) != cache_key:
+            # Build pinhole rays for each output pixel
+            f = 0.5 * out_w / np.tan(np.radians(fov_deg) / 2.0)
+            xs = np.arange(out_w, dtype=np.float32) - out_w / 2.0
+            ys = np.arange(out_h, dtype=np.float32) - out_h / 2.0
+            xv, yv = np.meshgrid(xs, ys)
+            zv = np.full_like(xv, f)
+
+            # Ray direction → spherical coords (forward = center of equirect)
+            lon = np.arctan2(xv, zv)                       # [-pi, pi]
+            lat = np.arctan2(-yv, np.sqrt(xv ** 2 + zv ** 2))  # [-pi/2, pi/2]
+
+            # Spherical → equirect pixel coordinates
+            self._equirect_map_x = ((lon / (2 * np.pi) + 0.5) * w).astype(np.float32)
+            self._equirect_map_y = ((0.5 - lat / np.pi) * h).astype(np.float32)
+            self._equirect_cache_key = cache_key
+
+        return cv2.remap(frame, self._equirect_map_x, self._equirect_map_y,
+                         cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
 
     def _cv2_to_qpixmap(self, cv_img, w, h):
         rgb_image = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
