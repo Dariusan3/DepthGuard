@@ -132,6 +132,11 @@ class YOLOObjectDetector:
             if x2 <= x1 or y2 <= y1:
                 continue
             label = self._class_label(class_id)
+            # Skip the ego-vehicle: the driver's own hood / dashboard / A-pillars
+            # show up as a huge, bottom-anchored, centered "car" or "truck" box.
+            # Detecting it as a threat makes no sense, so drop it.
+            if self._is_ego_vehicle(label, (x1, y1, x2, y2), (h, w)):
+                continue
             center = ((x1 + x2) // 2, (y1 + y2) // 2)
             depth = self._box_depth(depth_map, (x1, y1, x2, y2))
             importance = self._importance(
@@ -180,6 +185,34 @@ class YOLOObjectDetector:
     def _class_label(self, class_id: int) -> str:
         name = self._names.get(class_id) if isinstance(self._names, dict) else None
         return str(name or ADAS_CLASS_IDS.get(class_id, f"class_{class_id}"))
+
+    @staticmethod
+    def _is_ego_vehicle(label: str, bbox: tuple[int, int, int, int],
+                        frame_shape: tuple[int, int]) -> bool:
+        """
+        Heuristic: a detection is the participant's OWN car (not a real threat)
+        when it is a vehicle that is large, anchored to the very bottom of the
+        frame, and roughly centered. Dashcams capture the hood / dashboard /
+        A-pillars which YOLO often labels 'car' or 'truck'.
+        """
+        if label not in {"car", "truck", "bus"}:
+            return False
+        h, w = frame_shape
+        x1, y1, x2, y2 = bbox
+        bw, bh = (x2 - x1), (y2 - y1)
+        if bw <= 0 or bh <= 0:
+            return False
+
+        # Bottom-anchored: box bottom edge sits in the lowest 8% of the frame
+        bottom_anchored = y2 >= h * 0.92
+        # Large: covers a big slice of the frame width and a chunk of its height
+        wide = bw >= w * 0.45
+        tall_enough = bh >= h * 0.18
+        # Centered horizontally: box center within the middle third
+        cx = (x1 + x2) / 2.0
+        centered = (w * 0.30) <= cx <= (w * 0.70)
+
+        return bottom_anchored and wide and tall_enough and centered
 
     @staticmethod
     def _clamp_box(coords, width: int, height: int) -> tuple[int, int, int, int]:

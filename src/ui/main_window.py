@@ -793,8 +793,9 @@ class MainWindow(QMainWindow):
             "MiDaS Large",
             "DepthPro (Pretrained)",
             "Your Model (DepthPro)",
+            "Load Custom Model…",
         ])
-        self.cb_model.setFixedWidth(190)
+        self.cb_model.setFixedWidth(200)
         self.cb_model.currentIndexChanged.connect(self.switch_model)
 
         self.lbl_mode = QLabel("MODE")
@@ -1255,6 +1256,7 @@ class MainWindow(QMainWindow):
 
         self.current_trial = scenario
         self.trial_start_time = time.time()
+        self._last_brake_ms = 0.0   # fresh debounce window for the new trial
 
         self.lbl_trial_counter.setText(
             f"TRIAL {self.playlist.trial_num} OF {self.playlist.total}  "
@@ -1468,6 +1470,29 @@ class MainWindow(QMainWindow):
                 "  source get_pretrained_models.sh"
             ):
                 return
+        elif index == 6:
+            # Load any custom model from a checkpoint file the user picks
+            ckpt, _ = QFileDialog.getOpenFileName(
+                self, "Select your model checkpoint", "checkpoints",
+                "Model files (*.pt *.pth *.ts *.onnx);;All files (*)"
+            )
+            if not ckpt:
+                # User cancelled — revert to Mock
+                self.cb_model.blockSignals(True)
+                self.cb_model.setCurrentIndex(0)
+                self.cb_model.blockSignals(False)
+                self.model = MockModel()
+                return
+            if not self._load_model_safe(
+                lambda: self._load_custom(ckpt),
+                "LOADING CUSTOM MODEL...",
+                "Custom models need PyTorch.\n\npip install torch torchvision"
+            ):
+                return
+            # Re-label the dropdown entry to the loaded file name
+            self.cb_model.blockSignals(True)
+            self.cb_model.setItemText(6, f"Custom: {os.path.basename(ckpt)}")
+            self.cb_model.blockSignals(False)
 
         self._apply_status_style("SAFE", "--", "--")
         if was_playing:
@@ -1537,6 +1562,10 @@ class MainWindow(QMainWindow):
     def _load_depthpro(self, checkpoint=None):
         from src.models.depth_pro_model import DepthProModel
         return DepthProModel(checkpoint=checkpoint)
+
+    def _load_custom(self, checkpoint):
+        from src.models.custom_model import CustomDepthModel
+        return CustomDepthModel(checkpoint=checkpoint)
 
     def update_simulation_mode(self):
         mode = self.cb_mode.currentIndex()
@@ -1631,6 +1660,10 @@ class MainWindow(QMainWindow):
             alert_res["objects"] = self._detection_payloads(detections)
             alert_res["detector_status"] = self._last_detector_status
             latency_ms = (time.time() - t0) * 1000
+
+            # Stash the latest alert state so record_reaction() can log the real
+            # depth + threat position at the moment of a brake press.
+            self._latest_alert_res = alert_res
 
             self.perf_monitor.record_frame(latency_ms)
 
@@ -1940,23 +1973,10 @@ class MainWindow(QMainWindow):
         return image
 
     def _draw_detector_status(self, image, detections):
-        if detections:
-            return image
-        status = getattr(self, "_last_detector_status", "")
-        if not status or status == "YOLO: waiting":
-            return image
-
-        text = status
-        if len(text) > 86:
-            text = text[:83] + "..."
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        scale = 0.46
-        (tw, th), _ = cv2.getTextSize(text, font, scale, 1)
-        x, y = 14, 28
-        overlay = image.copy()
-        cv2.rectangle(overlay, (x - 7, y - th - 8), (x + tw + 8, y + 8), (12, 16, 33), -1)
-        cv2.addWeighted(overlay, 0.75, image, 0.25, 0, image)
-        cv2.putText(image, text, (x, y), font, scale, (10, 214, 255), 1, cv2.LINE_AA)
+        # Intentionally a no-op. The "YOLO …: N objects" debug text used to be
+        # drawn in the top-left corner; it's been removed because it shouldn't
+        # appear in front of a participant. Detector status is still tracked in
+        # self._last_detector_status for logging / the researcher's reference.
         return image
 
     @staticmethod
@@ -2221,10 +2241,42 @@ class MainWindow(QMainWindow):
         )
 
     # ── Interaction Logic ────────────────────────────────────────
+    # Minimum gap between two brake presses that get logged. Holding or mashing
+    # the trigger fires many events; without this every repeat logged a
+    # "duplicate_press" row (16 of 27 rows in the first real session). 700 ms is
+    # short enough to never block a genuine second reaction, long enough to drop
+    # trigger-hold spam.
+    BRAKE_DEBOUNCE_MS = 700
+
     def record_reaction(self):
         # Allow brake during inter-trial blank too (we just ignore it gracefully)
         if not self.is_playing or self._between_trials:
             return
+
+        # Debounce — ignore presses that arrive within the cooldown window.
+        now_ms = time.time() * 1000.0
+        last_ms = getattr(self, "_last_brake_ms", 0.0)
+        if now_ms - last_ms < self.BRAKE_DEBOUNCE_MS:
+            self._last_remote_brake = None
+            return
+        self._last_brake_ms = now_ms
+
+        # Pull the real depth + threat position captured on the latest frame
+        latest = getattr(self, "_latest_alert_res", None)
+        min_depth = float(latest.get("min_depth", -1.0)) if latest else -1.0
+        threat_box = self._smoothed_threat_box
+        threat_position = ""
+        if threat_box is not None and latest:
+            x1, _, x2, _ = threat_box
+            cx = (x1 + x2) / 2.0
+            w = latest.get("roi_coords", (0, 0, 1, 1))[2] or 1
+            frac = cx / float(w if w > 1 else 1)
+            # roi x2 isn't frame width; use a robust split on the driver-view width
+            fw = self.lbl_driver_view.width() or 1
+            cx_frac = cx / fw
+            threat_position = (
+                "left" if cx_frac < 0.4 else "right" if cx_frac > 0.6 else "center"
+            )
 
         remote = getattr(self, "_last_remote_brake", None)
         self.data_logger.log_reaction(
@@ -2235,6 +2287,9 @@ class MainWindow(QMainWindow):
             condition=self.condition.value,
             response_source=remote.get("source", "desktop") if remote else "desktop",
             network_latency_ms=remote.get("latency_hint_ms", 0) if remote else 0,
+            min_depth_at_press=min_depth,
+            threat_box_at_press=threat_box,
+            threat_position=threat_position,
         )
         self._last_remote_brake = None
 

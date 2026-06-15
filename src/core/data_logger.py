@@ -251,22 +251,36 @@ class DataLogger:
         avg_reaction = 0
         if self.reaction_times:
             avg_reaction = sum(self.reaction_times) / len(self.reaction_times)
-            
-        hits = sum(1 for row in self.reaction_data if row.get("outcome") == "hit")
-        misses = sum(1 for row in self.reaction_data if row.get("outcome") == "miss")
-        false_alarms = sum(1 for row in self.reaction_data if row.get("outcome") == "false_alarm")
-        correct_rejections = sum(1 for row in self.reaction_data if row.get("outcome") == "correct_rejection")
+
+        def count(outcome):
+            return sum(1 for row in self.reaction_data if row.get("outcome") == outcome)
+
+        hits = count("hit")
+        misses = count("miss")
+        false_alarms = count("false_alarm")
+        correct_rejections = count("correct_rejection")
+        out_of_window = count("out_of_window")
+        duplicates = count("duplicate_press")
+
+        # "Meaningful presses" = brake presses that actually count toward analysis
+        # (the participant's first real press on each trial). Excludes duplicates
+        # and the auto-logged miss/correct_rejection rows.
+        meaningful_presses = hits + false_alarms + out_of_window
+
         hazard_trials = hits + misses
         detection_rate = (hits / hazard_trials * 100) if hazard_trials else 0
         safe_trials = false_alarms + correct_rejections
         false_alarm_rate = (false_alarms / safe_trials * 100) if safe_trials else 0
-            
+
         return {
             "total": self.total_reactions,
+            "meaningful_presses": meaningful_presses,
             "avg_time": int(avg_reaction),
             "correct_pct": int(detection_rate),
             "hits": hits,
             "misses": misses,
+            "out_of_window": out_of_window,
+            "duplicates": duplicates,
             "detection_rate": int(detection_rate),
             "false_alarms": false_alarms,
             "correct_rejections": correct_rejections,
@@ -297,12 +311,17 @@ class DataLogger:
             f.write(f"=========================\n")
             f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"Participant ID: {participant_id}\n\n")
-            f.write(f"Total Reactions: {stats['total']}\n")
-            f.write(f"Hits: {stats['hits']}\n")
-            f.write(f"Misses: {stats['misses']}\n")
-            f.write(f"Detection Rate: {stats['detection_rate']}%\n")
-            f.write(f"False Alarms: {stats['false_alarms']} ({stats['false_alarm_rate']}%)\n")
-            f.write(f"Average Reaction Time: {stats['avg_time']} ms\n\n")
+            f.write(f"Meaningful presses: {stats['meaningful_presses']}"
+                    f"  (hits + false alarms + out-of-window)\n")
+            f.write(f"  Hits: {stats['hits']}\n")
+            f.write(f"  Misses: {stats['misses']}\n")
+            f.write(f"  Out of window: {stats['out_of_window']}\n")
+            f.write(f"  False Alarms: {stats['false_alarms']} ({stats['false_alarm_rate']}%)\n")
+            f.write(f"Detection Rate: {stats['detection_rate']}%"
+                    f"  (hits / hazard trials)\n")
+            f.write(f"Average Reaction Time: {stats['avg_time']} ms\n")
+            f.write(f"Duplicate presses dropped: {stats['duplicates']}\n")
+            f.write(f"Raw press events logged: {stats['total']}\n\n")
             f.write(f"NASA-TLX Blocks Collected: {stats['tlx_blocks']}/3\n")
             if stats["sus_score"] is not None:
                 f.write(f"SUS Score: {stats['sus_score']:.1f}\n")
